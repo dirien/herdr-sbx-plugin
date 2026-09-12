@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { CONFIG_DEFAULTS } from "../src/config.mjs";
-import { createLifecycle } from "../src/lifecycle.mjs";
+import { createLifecycle, deletionTargets } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
 import { FAKE_SBX, createFixture, mappingFor } from "./helpers.mjs";
 
@@ -131,5 +131,22 @@ test("a shell opens in a sandbox whose preparation failed, but not before the sa
   assert.deepEqual(shellCall.slice(-3), ["--", "bash", "-l"]);
   assert.equal(f.mappings().panes["pane-1"].lifecycleState, "failed", "a shell changes no lifecycle state");
   assert.throws(() => lifecycle.shell("pane-2"), (error) => error.errorKind === "target" && /does not exist yet \(state: missing\)/.test(error.message));
+  f.cleanup();
+});
+
+test("prepare takes a reused sandbox off the deletion checkpoint so a later destroy still deletes it", () => {
+  const other = "herdr-codex-999999999999";
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }, { name: other, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "missing", deletedSandboxNames: [NAME], replacesSandboxNames: [other], setupScriptRanAt: "2026-09-12T00:00:00.000Z" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  const prepared = lifecycle.prepare("pane-1").entry;
+  assert.equal(prepared.lifecycleState, "prepared");
+  assert.deepEqual(prepared.deletedSandboxNames, [], "a sandbox that exists again is no longer written off");
+  assert.equal(prepared.setupScriptRanAt, null, "the setup never ran in this VM");
+  assert.deepEqual(deletionTargets(prepared), [NAME, other]);
+  assert.deepEqual(lifecycle.destroy("pane-1"), { deleted: [NAME, other], missing: [] });
+  assert.deepEqual(f.sbxSandboxes(), []);
   f.cleanup();
 });

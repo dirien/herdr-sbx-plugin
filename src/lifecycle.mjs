@@ -154,8 +154,25 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       const deletedSandboxNames = (entry.deletedSandboxNames ?? []).filter((name) => name !== entry.sandboxName);
       updatePaneEntry(stateDir, paneId, { lifecycleState: "created", createdAt: new Date().toISOString(), lastError: null, deletedSandboxNames, setupScriptRanAt: null });
       entry.setupScriptRanAt = null;
-    } else if (!CONNECTABLE_STATES.has(entry.lifecycleState)) {
-      updatePaneEntry(stateDir, paneId, { lifecycleState: "created", lastError: null });
+    } else {
+      // A reused sandbox that the mapping had written off as deleted is a new
+      // VM under the old name: take it off the checkpoint so destroy deletes
+      // it, and run the setup again because it never ran in this VM.
+      const checkpointed = (entry.deletedSandboxNames ?? []).includes(entry.sandboxName);
+      const patch = {};
+      if (checkpointed) {
+        log(`Sandbox ${entry.sandboxName} was recorded as deleted but exists again; treating it as new.`);
+        patch.deletedSandboxNames = entry.deletedSandboxNames.filter((name) => name !== entry.sandboxName);
+        patch.setupScriptRanAt = null;
+        entry.setupScriptRanAt = null;
+      }
+      if (checkpointed || !CONNECTABLE_STATES.has(entry.lifecycleState)) {
+        patch.lifecycleState = "created";
+        patch.lastError = null;
+      }
+      if (Object.keys(patch).length > 0) {
+        updatePaneEntry(stateDir, paneId, patch);
+      }
     }
     if (agent.setupScript && (!reused || !entry.setupScriptRanAt)) {
       log(`Running the ${agent.title} setup script inside ${entry.sandboxName}...`);
