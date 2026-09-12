@@ -3,11 +3,15 @@
 # with the server's PATH, which may not contain node (nvm, volta, brew in a
 # login-only PATH), so the install step records the absolute path in
 # bin/node-path and this shim prefers it. Override with HERDR_SBX_NODE, which
-# may be an absolute path or a name found on PATH.
-dir=$(dirname "$0")
+# may be an absolute path or a name found on PATH. Only shell builtins are
+# used until node runs, so a PATH without coreutils cannot break the shim.
+case "$0" in
+  */*) dir=${0%/*} ;;
+  *) dir=. ;;
+esac
 node="${HERDR_SBX_NODE:-}"
 if [ -z "$node" ] && [ -r "$dir/node-path" ]; then
-  node=$(head -n 1 "$dir/node-path")
+  read -r node < "$dir/node-path" || node=""
 fi
 if [ -z "$node" ] || ! command -v "$node" >/dev/null 2>&1; then
   node=node
@@ -18,7 +22,7 @@ if ! command -v "$node" >/dev/null 2>&1; then
   fi
   printf 'herdr-sbx-plugin: node was not found on PATH. Run "sh scripts/write-node-path.sh" in the plugin directory or set HERDR_SBX_NODE to your node binary.\n' >&2
   # In a Herdr pane the pane closes with this process; give the message time to be read.
-  if [ -t 1 ]; then sleep 8; fi
+  if [ -t 1 ] && command -v sleep >/dev/null 2>&1; then sleep 8; fi
   exit 127
 fi
 exec "$node" "$@"

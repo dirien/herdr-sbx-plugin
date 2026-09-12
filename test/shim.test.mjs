@@ -66,3 +66,25 @@ test("actions run end to end through the shim as the manifest declares", () => {
   assert.equal(runAction(f, "doctor").result.ok, true);
   f.cleanup();
 });
+
+test("the shim and the build script need nothing but shell builtins and pick the newest nvm node numerically", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-shim-"));
+  copyFileSync(SHIM, path.join(dir, "run.sh"));
+  writeFileSync(path.join(dir, "node-path"), `${process.execPath}\n`);
+  const bare = spawnSync("/bin/sh", [path.join(dir, "run.sh"), "-p", "'builtins only'"], { encoding: "utf8", env: { PATH: "/nonexistent" } });
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.equal(bare.stdout.trim(), "builtins only");
+  assert.equal(bare.stderr, "", "no missing-command noise from dirname or head");
+
+  const home = mkdtempSync(path.join(tmpdir(), "herdr-sbx-nvm-"));
+  for (const version of ["v9.11.2", "v20.11.0", "v20.9.0", "not-a-version"]) {
+    const bin = path.join(home, ".nvm", "versions", "node", version, "bin");
+    spawnSync("mkdir", ["-p", bin]);
+    writeFileSync(path.join(bin, "node"), "#!/bin/sh\necho fake\n");
+    chmodSync(path.join(bin, "node"), 0o755);
+  }
+  const picked = spawnSync("/bin/sh", [path.join(ROOT, "scripts", "write-node-path.sh"), path.join(dir, "picked")], { encoding: "utf8", env: { PATH: "/nonexistent", HOME: home, HERDR_SBX_NODE_CANDIDATES: `${home}/none/node` } });
+  assert.equal(picked.status, 0, picked.stderr);
+  assert.equal(picked.stderr, "");
+  assert.equal(readFileSync(path.join(dir, "picked"), "utf8").trim(), path.join(home, ".nvm", "versions", "node", "v20.11.0", "bin", "node"));
+});
