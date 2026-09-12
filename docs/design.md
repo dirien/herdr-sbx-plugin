@@ -57,8 +57,8 @@ created.
 ## Why these choices
 
 - The plugin is plain Node with no dependencies. Every supported agent CLI is
-  an npm package, so Node is already on the machine, and `herdr plugin install`
-  can clone the repo without a build step.
+  an npm package, so Node is already on the machine, and the only build step
+  `herdr plugin install` runs records where that Node lives for the shim.
 - Mount mode is the default because the bind mount removes the upload and
   patch round trip other sandbox plugins need. Clone mode is one config key away
   for people who want the agent isolated from the checkout.
@@ -71,7 +71,22 @@ created.
   fail or need allow rules. Custom agents can still run a `setupScript`.
 - The plugin classifies failures from the CLI output because `sbx` exit codes
   are not documented. The regexes are deliberately loose, and everything else
-  lands in `unknown` with the captured output attached.
+  lands in `unknown` with the captured output attached. Daemon and credential
+  wording is checked before the broad "not found" wording, and a "not found"
+  from `sbx rm` counts only once `sbx ls` agrees, so a sandbox is never recorded
+  as deleted while it still exists.
+- Every captured `sbx` call has a timeout (two minutes; thirty for `create`
+  and setup scripts, which may pull an image) and is reported as a `daemon`
+  failure when it expires. The interactive agent session is the one call that
+  may run for hours, so it has none.
+- Key bindings are added by an action the user invokes, not by the build step.
+  AgentBox splices its bindings into `config.toml` during `herdr plugin
+  install`; here a file the user owns changes only when they ask, the installer
+  refuses chords Herdr or another command already uses, and it restores the
+  file when `herdr config check` rejects the result.
+- Pane existence comes from one `herdr pane list` call, not one `pane get` per
+  mapping, because the overlay asks every few seconds and a workspace with a
+  handful of sandboxes would otherwise spawn a process per row per frame.
 
 ## Borrowed from other plugins
 

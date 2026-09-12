@@ -32,7 +32,7 @@ you allow it.
 | --- | --- |
 | [Herdr](https://herdr.dev) | 0.9.0 or newer (`min_herdr_version` in the manifest) |
 | [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/install/) | `sbx` 0.42 or newer, signed in with `sbx login` |
-| Node.js | 20 or newer; the plugin has no dependencies and no build step |
+| Node.js | 20 or newer; the plugin has no dependencies to install, and its only build step records where `node` lives |
 | Platform | Linux with KVM, or macOS on Apple silicon (what `sbx` needs) |
 
 Install `sbx` with `brew trust docker/tap && brew install docker/tap/sbx` on
@@ -135,8 +135,8 @@ example after a Herdr restart, `reconnect` and `replace-sandbox` open a new
 pane next to you and move the sandbox there (`adoptedFrom` in the result), and
 `list-sandboxes` marks such mappings with `pane gone`. When a pane exists but
 swallows the typed command, for example because it is not at a shell prompt,
-`reconnect` starts in a fresh pane after four seconds instead (`movedTo`) and
-relabels the old one `(moved to ...)`. `reconnect`,
+`reconnect` and `replace-sandbox` start in a fresh pane after four seconds
+instead (`movedTo`) and relabel the old one `(moved to ...)`. `reconnect`,
 `replace-sandbox` and `forget-mapping` refuse to run while Herdr still detects
 an agent in the target pane. Stopping a sandbox while the agent is attached
 ends that session.
@@ -170,10 +170,11 @@ Those four chords are unused by Herdr 0.9. `prefix+shift+d` and
 so the installer leaves an existing binding on such a chord alone and reports
 it instead of replacing it. A chord that another command already uses is
 reported the same way and not taken. If `herdr config check` rejects the
-result, the file is restored from a backup and the action fails with `config`. Bind other actions the same way, then run
-`herdr config check` and `herdr server reload-config`. `prefix+?` inside Herdr
-lists what is active (the default prefix is `ctrl+b`), and
-`herdr config reset-keys` removes every custom binding.
+result, the file is restored from a backup and the action fails with `config`.
+Bind other actions the same way, then run `herdr config check` and
+`herdr server reload-config`. `prefix+?` inside Herdr lists what is active (the
+default prefix is `ctrl+b`), and `herdr config reset-keys` removes every custom
+binding.
 
 ## Configuration
 
@@ -302,14 +303,17 @@ The plugin never reads or stores tokens itself. The `env`, `envFiles` and
 them and register them with `sbx` instead; the proxy injects them per request:
 
 ```bash
-sbx secret set anthropic -t "$ANTHROPIC_API_KEY"
+echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic
 sbx secret set github --command 'gh auth token'
 sbx policy allow network registry.npmjs.org,api.github.com
 ```
 
-Sandboxes deny outbound traffic by default. If an agent needs a host, allow it
-with `sbx policy allow network`, bake the rule into a kit, or add
-`denyNetwork` rules for hosts that must stay unreachable.
+The network preset you chose with `sbx policy init` decides what the VM may
+reach: `balanced` allows model provider APIs, package registries and code
+hosts and blocks the rest, `deny-all` blocks everything until you allow it. If
+an agent needs another host, allow it with `sbx policy allow network`, bake
+the rule into a kit, or add `denyNetwork` rules for hosts that must stay
+unreachable.
 
 ### Ports and the overlay
 
