@@ -289,9 +289,10 @@ in this mode. Run `fetch-changes` to pull the agent's commits into the host
 repository as `sandbox-<name>/<branch>` refs, then merge or cherry-pick as
 usual. `sbx` registers a `sandbox-<name>` git remote only while `sbx run` is
 attached and stops a sandbox once its last session ends, so `fetch-changes`
-starts a stopped sandbox and, when that remote is absent, carries the branches
-over in a git bundle instead (`transport` in the result says which path was
-used). The fetched refs disappear with the sandbox, so keep work before
+uses that remote only while the sandbox is running. Otherwise, and whenever
+the remote is absent, it carries the branches over in a git bundle through
+`sbx exec` and `sbx cp`, which also starts a stopped sandbox (`transport` in
+the result says which path was used). The fetched refs disappear with the sandbox, so keep work before
 `forget-mapping` or `replace-sandbox` with
 `git branch agent-work sandbox-<name>/agent-work`; `fetch-changes` prints that
 command for each branch.
@@ -381,9 +382,11 @@ CLI `output` trimmed to 4000 characters when there was any:
 Set `HERDR_SBX_CONFIRMATION_TIMEOUT_MS` to shorten the 60 second confirmation
 window when testing orchestration. Captured `sbx` calls are killed after two
 minutes and reported as `daemon` failures, so a wedged daemon cannot hang an
-action; `sbx create` and setup scripts get thirty minutes because the first
-create pulls an image. `HERDR_SBX_TIMEOUT_MS` and `HERDR_SBX_SLOW_TIMEOUT_MS`
-change those limits. The interactive agent session has no timeout.
+action; the host-side `git fetch` of `fetch-changes` has the same limit and
+reports a timeout as `network`. `sbx create` and setup scripts get thirty
+minutes because the first create pulls an image. `HERDR_SBX_TIMEOUT_MS` and
+`HERDR_SBX_SLOW_TIMEOUT_MS` change those limits. The interactive agent session
+has no timeout.
 
 ## State and cleanup
 

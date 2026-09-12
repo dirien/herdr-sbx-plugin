@@ -394,5 +394,5 @@ export function createSbxClient({ bin = "sbx", env = process.env } = {}) {
     return { ok: result.status === 0, json, output: result.output.trim() };
   }
 
-  return { bin, run, runChecked, runInteractive, listSandboxes, findSandbox, listPorts, version, daemonStatus };
+  return { bin, timeouts, run, runChecked, runInteractive, listSandboxes, findSandbox, listPorts, version, daemonStatus };
 }

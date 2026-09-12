@@ -11,7 +11,7 @@ import { existsSync, statSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveAgent } from "./agents.mjs";
-import { AGENT_REPORT_SOURCE, TERMINAL_RESTORE_SEQUENCE } from "./constants.mjs";
+import { AGENT_REPORT_SOURCE, SBX_CALL_TIMEOUT_ENV, SBX_CALL_TIMEOUT_MS, TERMINAL_RESTORE_SEQUENCE } from "./constants.mjs";
 import { canonicalPath } from "./context.mjs";
 import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { sandboxGitRemote } from "./naming.mjs";
@@ -426,40 +426,62 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       updatePaneEntry(stateDir, paneId, { lifecycleState: "missing", lastError: { kind: "not-found", message: "The sandbox no longer exists.", at: new Date().toISOString() } });
       throw new PluginError("not-found", `Sandbox ${entry.sandboxName} no longer exists, so there is nothing to fetch.`);
     }
-    if (String(live.status ?? "").toLowerCase() !== "running") {
-      log(`Starting ${entry.sandboxName} so its git remote answers...`);
-      sbx.runChecked(["exec", entry.sandboxName, "--", "true"], "starting the sandbox for the fetch");
-      // Starting the VM proves it exists, nothing more: a mapping that never
-      // finished preparing must not become connectable here.
-      if (entry.lifecycleState === "missing") {
-        updatePaneEntry(stateDir, paneId, { lifecycleState: "created", lastError: null });
-      }
+    if (entry.lifecycleState === "missing") {
+      // The sandbox turned out to exist. That proves nothing about its
+      // preparation, so the mapping becomes created, not connectable.
+      updatePaneEntry(stateDir, paneId, { lifecycleState: "created", lastError: null });
     }
+    const wasRunning = String(live.status ?? "").toLowerCase() === "running";
     const remoteCheck = spawnSync("git", ["-C", entry.localPath, "remote", "get-url", remote], { encoding: "utf8" });
+    const hasRemote = remoteCheck.status === 0;
     let output;
     let transport;
-    if (remoteCheck.status === 0) {
+    if (hasRemote && wasRunning) {
+      // The remote's git daemon lives inside the session that registered it, so
+      // it is only trusted while the sandbox is running on its own.
       transport = "remote";
-      const fetch = spawnSync("git", ["-C", entry.localPath, "fetch", "--verbose", remote], { encoding: "utf8" });
-      if (fetch.error) {
-        throw new PluginError("startup", `Could not run git: ${fetch.error.message}`, { cause: fetch.error });
-      }
-      output = `${fetch.stdout ?? ""}${fetch.stderr ?? ""}`;
+      const fetch = runGit(["-C", entry.localPath, "fetch", "--verbose", remote], `git fetch ${remote}`);
+      output = fetch.output;
       if (fetch.status !== 0) {
         const kind = classifyGitFailure(output);
         throw new PluginError(kind, `git fetch ${remote} failed (exit ${fetch.status}).`, { output });
       }
     } else {
-      // sbx registers the remote only while `sbx run` attaches; the plugin attaches
-      // with `sbx exec`, so carry the commits over in a bundle instead.
+      // sbx registers the remote only while `sbx run` attaches and stops the
+      // sandbox once that session ends, so a stopped sandbox has no daemon to
+      // fetch from even when the remote is still registered. A bundle carried
+      // out with `sbx exec` and `sbx cp` works in every state.
       transport = "bundle";
-      log(`${entry.localPath} has no ${remote} remote; fetching through a git bundle instead.`);
+      log(hasRemote
+        ? `${entry.sandboxName} is not running, so the ${remote} remote has no git daemon behind it; fetching through a git bundle instead.`
+        : `${entry.localPath} has no ${remote} remote; fetching through a git bundle instead.`);
       output = fetchViaBundle(entry, remote);
     }
     const refs = spawnSync("git", ["-C", entry.localPath, "for-each-ref", "--format=%(refname:short)", `refs/remotes/${remote}/`], { encoding: "utf8" });
     // The remote's HEAD pointer shows up as the bare remote name; it is not a branch.
     const branches = refs.status === 0 ? (refs.stdout ?? "").split("\n").map((line) => line.trim()).filter((line) => line && line !== remote) : [];
     return { remote, branches, transport, output: output.trim() };
+  }
+
+  /**
+   * Runs git on the host with the same deadline as a captured sbx call, so a
+   * remote that accepts a connection and then stays silent cannot hang an
+   * action. A timeout is reported as a network failure.
+   * @param {string[]} args
+   * @param {string} step
+   * @returns {{status: number|null, output: string}}
+   */
+  function runGit(args, step) {
+    const timeout = sbx.timeouts?.call ?? SBX_CALL_TIMEOUT_MS;
+    const result = spawnSync("git", args, { encoding: "utf8", timeout, killSignal: "SIGKILL" });
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.error) {
+      if (/** @type {any} */ (result.error).code === "ETIMEDOUT") {
+        throw new PluginError("network", `${step} did not finish within ${Math.round(timeout / 1000)}s and was killed; the other side accepted the connection but stopped answering (${SBX_CALL_TIMEOUT_ENV} raises the limit).`, { output });
+      }
+      throw new PluginError("startup", `Could not run git: ${result.error.message}`, { cause: result.error });
+    }
+    return { status: result.status, output };
   }
 
   /**
@@ -476,11 +498,8 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     try {
       sbx.runChecked(buildExecArgs({ sandboxName: entry.sandboxName, argv: ["git", "-C", entry.localPath, "bundle", "create", inSandbox, "--branches"] }), "bundling the sandbox clone");
       sbx.runChecked(["cp", `${entry.sandboxName}:${inSandbox}`, onHost], "copying the bundle out of the sandbox");
-      const fetch = spawnSync("git", ["-C", entry.localPath, "fetch", "--verbose", onHost, `+refs/heads/*:refs/remotes/${remote}/*`], { encoding: "utf8" });
-      if (fetch.error) {
-        throw new PluginError("startup", `Could not run git: ${fetch.error.message}`, { cause: fetch.error });
-      }
-      const output = `${fetch.stdout ?? ""}${fetch.stderr ?? ""}`;
+      const fetch = runGit(["-C", entry.localPath, "fetch", "--verbose", onHost, `+refs/heads/*:refs/remotes/${remote}/*`], "git fetch from the sandbox bundle");
+      const { output } = fetch;
       if (fetch.status !== 0) {
         throw new PluginError(classifyGitFailure(output), `git fetch from the sandbox bundle failed (exit ${fetch.status}).`, { output });
       }

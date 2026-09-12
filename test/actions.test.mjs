@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:net";
 import { parseResultLine } from "../src/result.mjs";
 import { bridgeStartTimeout, entryCwd, keepBranchCommand } from "../src/action-main.mjs";
 import path from "node:path";
@@ -736,8 +737,8 @@ test("replace-sandbox leaves everything untouched when cancelled", () => {
   f.cleanup();
 });
 
-test("fetch-changes starts a stopped sandbox, then fetches from its remote in clone mode only", () => {
-  const f = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }), "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2" }) }) });
+test("fetch-changes uses the registered remote of a running sandbox, in clone mode only", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }), "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2" }) }) });
   const bare = path.join(f.root, "sandbox-repo.git");
   git(f.root, ["init", "-q", "--bare", "--initial-branch=agent-work", bare]);
   git(f.worktree, ["remote", "add", `sandbox-${NAME}`, bare]);
@@ -749,10 +750,43 @@ test("fetch-changes starts a stopped sandbox, then fetches from its remote in cl
   assert.equal(result.transport, "remote");
   assert.deepEqual(result.keep, [{ ref: `sandbox-${NAME}/agent-work`, local: "agent-work", command: `git -C ${f.worktree} branch agent-work sandbox-${NAME}/agent-work` }]);
   assert.match(stdout, /Keep a branch with:/);
-  assert.deepEqual(f.sbxCalls(), [["ls", "--json"], ["exec", NAME, "--", "true"]], "a stopped sandbox is started before the fetch");
-  assert.equal(f.sbxSandboxes()[0].status, "running");
+  assert.deepEqual(f.sbxCalls(), [["ls", "--json"]], "a running sandbox needs no exec before the fetch");
   assert.equal(runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-2" } }).result.errorKind, "target");
   f.cleanup();
+});
+
+test("fetch-changes bundles instead of trusting a remote whose sandbox is stopped", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
+  const bare = path.join(f.root, "sandbox-repo.git");
+  git(f.root, ["init", "-q", "--bare", "--initial-branch=agent-work", bare]);
+  git(f.worktree, ["remote", "add", `sandbox-${NAME}`, bare]);
+  const { result, stderr } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { FAKE_SBX_EXEC_RUN: "1" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.transport, "bundle", "the daemon behind the remote died with the session that registered it");
+  assert.match(stderr, /is not running, so the sandbox-.* remote has no git daemon behind it/);
+  assert.ok(f.sbxCalls().some((call) => call[0] === "exec" && call.join(" ").includes("bundle create")), "the bundle exec starts the stopped sandbox itself");
+  f.cleanup();
+});
+
+test("fetch-changes kills a git fetch whose remote accepts the connection and then stays silent", async () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
+  // A listener that never answers: the kernel completes git's connection, the daemon never replies.
+  const server = createServer((socket) => socket.unref());
+  server.unref();
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
+    git(f.worktree, ["remote", "add", `sandbox-${NAME}`, `git://127.0.0.1:${port}/repo.git`]);
+    const started = Date.now();
+    const { result } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { HERDR_SBX_TIMEOUT_MS: "700" } });
+    assert.equal(result.ok, false, JSON.stringify(result));
+    assert.equal(result.errorKind, "network");
+    assert.match(result.message, /git fetch sandbox-.* did not finish within 1s and was killed/);
+    assert.ok(Date.now() - started < 10_000, "the action came back promptly");
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+    f.cleanup();
+  }
 });
 
 test("fetch-changes carries commits over in a bundle when sbx registered no remote", () => {
@@ -987,7 +1021,7 @@ test("prune-mappings warns about clone-mode orphans, reports a failed deletion a
 });
 
 test("fetch-changes does not promote a mapping that never finished preparing", () => {
-  const f = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone", lifecycleState: "failed", lastError: { kind: "config", message: "setup failed", at: "2026-09-12T00:00:00.000Z" } }) }) });
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone", lifecycleState: "failed", lastError: { kind: "config", message: "setup failed", at: "2026-09-12T00:00:00.000Z" } }) }) });
   const bare = path.join(f.root, "sandbox-repo.git");
   git(f.root, ["init", "-q", "--bare", "--initial-branch=agent-work", bare]);
   git(f.worktree, ["remote", "add", `sandbox-${NAME}`, bare]);
@@ -998,7 +1032,7 @@ test("fetch-changes does not promote a mapping that never finished preparing", (
   assert.equal(entry.lifecycleState, "failed", "starting the VM for a fetch does not make the mapping connectable");
   assert.equal(entry.lastError.kind, "config");
 
-  const stale = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone", lifecycleState: "missing" }) }) });
+  const stale = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone", lifecycleState: "missing" }) }) });
   git(stale.root, ["init", "-q", "--bare", "--initial-branch=agent-work", path.join(stale.root, "sandbox-repo.git")]);
   git(stale.worktree, ["remote", "add", `sandbox-${NAME}`, path.join(stale.root, "sandbox-repo.git")]);
   git(stale.worktree, ["push", "-q", `sandbox-${NAME}`, "HEAD:refs/heads/agent-work"]);
