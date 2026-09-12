@@ -40,6 +40,33 @@ export async function askWithTimeout(prompt, timeoutMs, streams) {
  * @param {{installSignalHandlers?: boolean}} [options] Install SIGINT/SIGTERM handlers that record a cancellation.
  * @returns {Promise<number>}
  */
+/** Line width the popup wraps its text to. */
+const POPUP_WIDTH = 96;
+
+/**
+ * Splits text into lines no longer than `width`, breaking after a comma or a
+ * space when one is in reach and hard-breaking otherwise, so no character is
+ * ever dropped.
+ * @param {string} text
+ * @param {number} width
+ * @returns {string[]}
+ */
+export function wrapText(text, width) {
+  const limit = Math.max(1, Math.floor(width));
+  const lines = [];
+  let rest = text;
+  while (rest.length > limit) {
+    // A line may end with a comma at index limit-1, or just before a space at index limit.
+    const afterComma = rest.lastIndexOf(",", limit - 1) + 1;
+    const beforeSpace = rest.lastIndexOf(" ", limit);
+    const cut = afterComma > 0 && afterComma >= beforeSpace ? afterComma : beforeSpace > 0 ? beforeSpace : limit;
+    lines.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  lines.push(rest);
+  return lines;
+}
+
 export async function runConfirmationPopup(env = process.env, streams = { input: process.stdin, output: process.stdout }, { installSignalHandlers = false } = {}) {
   const write = (line) => streams.output.write(`${line}\n`);
   const requestId = env[CONFIRMATION_ID_ENV];
@@ -70,21 +97,28 @@ export async function runConfirmationPopup(env = process.env, streams = { input:
     process.once("SIGTERM", cancelOnSignal);
   }
   // Paths and names come from the file system and older state files; strip
-  // control characters so nothing can redraw the one prompt that authorises a deletion.
-  // C0 and C1 controls (CSI and OSC live in C1 for a UTF-8 terminal) and the
-  // Unicode line separators are replaced; long values are cut so the prompt stays on screen.
-  const shown = (value) => {
-    const text = String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?");
-    return text.length > 400 ? `${text.slice(0, 397)}...` : text;
+  // control characters (C0 and C1, where CSI and OSC live for a UTF-8 terminal,
+  // plus the Unicode line separators) so nothing can redraw the one prompt that
+  // authorises a deletion. Nothing is ever cut: every sandbox this answer will
+  // delete, and every warning, is printed in full, wrapped over several lines.
+  const shown = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?");
+  const field = (label, value) => {
+    const [first, ...more] = wrapText(shown(value), POPUP_WIDTH - label.length - 2);
+    write(`  ${label}${first}`);
+    for (const line of more) {
+      write(`  ${" ".repeat(label.length)}${line}`);
+    }
   };
   write("Docker Sandbox deletion");
   write("");
-  write(`  action:   ${shown(request.action)}`);
-  write(`  sandbox:  ${shown(request.sandboxName)}`);
-  write(`  worktree: ${shown(request.localPath)}`);
-  write(`  pane:     ${shown(request.paneId)}`);
+  field("action:   ", request.action);
+  field("sandbox:  ", request.sandboxName);
+  field("worktree: ", request.localPath);
+  field("pane:     ", request.paneId);
   write("");
-  write(`  ${shown(request.consequence)}`);
+  for (const line of wrapText(shown(request.consequence), POPUP_WIDTH - 2)) {
+    write(`  ${line}`);
+  }
   write(`  This prompt expires in ${Math.round(remainingMs / 1000)}s.`);
   write("");
   const answer = await askWithTimeout("Type DELETE to confirm, anything else to cancel: ", remainingMs, streams);

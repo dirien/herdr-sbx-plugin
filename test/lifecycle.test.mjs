@@ -100,3 +100,20 @@ test("prepare reports an exec failure that printed something as unknown rather t
   assert.equal(f.mappings().panes["pane-1"].lifecycleState, "created", "not marked failed: the sandbox may be fine");
   f.cleanup();
 });
+
+test("stop keeps a mapping that never finished preparing out of the connectable states", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "failed", lastError: { kind: "config", message: "setup script failed", at: "2026-09-12T00:00:00.000Z" } }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.deepEqual(lifecycle.stop("pane-1"), { sandboxName: NAME });
+  const failed = f.mappings().panes["pane-1"];
+  assert.equal(failed.lifecycleState, "failed", "reconnect must run prepare again, not attach");
+  assert.equal(failed.lastError.message, "setup script failed");
+  assert.deepEqual(lifecycle.stop("pane-2"), { sandboxName: NAME });
+  assert.equal(f.mappings().panes["pane-2"].lifecycleState, "stopped");
+  assert.equal(f.mappings().panes["pane-2"].lastError, null);
+  f.cleanup();
+});

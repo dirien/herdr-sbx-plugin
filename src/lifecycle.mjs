@@ -301,7 +301,12 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       }
       throw error;
     }
-    updatePaneEntry(stateDir, paneId, { lifecycleState: "stopped", lastError: null });
+    // Stopping says nothing about readiness: a mapping that never finished
+    // preparing (failed, provisional, creating) keeps that state and its error,
+    // so the next reconnect runs prepare again instead of attaching blindly.
+    if (CONNECTABLE_STATES.has(entry.lifecycleState)) {
+      updatePaneEntry(stateDir, paneId, { lifecycleState: "stopped", lastError: null });
+    }
     return { sandboxName: entry.sandboxName };
   }
 

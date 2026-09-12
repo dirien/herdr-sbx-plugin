@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { ROOT } from "./helpers.mjs";
 import { createConfirmationRequest, readConfirmationDecision, requestDeletionConfirmation, sweepStaleConfirmations, writeConfirmationDecision } from "../src/confirm.mjs";
 import { utimesSync, writeFileSync } from "node:fs";
-import { runConfirmationPopup } from "../src/confirmation-pane.mjs";
+import { runConfirmationPopup, wrapText } from "../src/confirmation-pane.mjs";
 
 const DETAILS = { action: "forget-mapping", sandboxName: "herdr-x-1", localPath: "/w", paneId: "pane-1", consequence: "It is gone." };
 
@@ -161,10 +161,11 @@ test("the popup strips control characters from the names it displays", async () 
   assert.match(text, /sandbox:  herdr-x-1\?\?  consequence: nothing happens/);
 });
 
-test("the popup also strips C1 controls and cuts very long values", async () => {
+test("the popup strips C1 controls and wraps long values instead of cutting them", async () => {
   const CSI = String.fromCharCode(0x9b);
+  const names = Array.from({ length: 40 }, (_, index) => `herdr-claude-code-${String(index).padStart(12, "0")}`);
   const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-popup-"));
-  const requestId = createConfirmationRequest(dir, { ...DETAILS, localPath: `/w/${CSI}2J${"x".repeat(600)}` }, 60_000);
+  const requestId = createConfirmationRequest(dir, { ...DETAILS, sandboxName: names.join(", "), localPath: `/w/${CSI}2J${"x".repeat(600)}`, consequence: `${"Every one of them is deleted. ".repeat(8)}Clone mode: keep work first.` }, 60_000);
   const input = new PassThrough();
   const output = new PassThrough();
   let text = "";
@@ -175,6 +176,23 @@ test("the popup also strips C1 controls and cuts very long values", async () => 
   input.write("no\n");
   await running;
   assert.ok(!text.includes(CSI));
-  assert.match(text, /worktree: \/w\/\?2Jx+\.\.\.$/m);
-  assert.ok(!text.includes("x".repeat(400)));
+  assert.match(text, /worktree: \/w\/\?2Jx+$/m);
+  const worktreeBlock = text.slice(text.indexOf("worktree: "), text.indexOf("  pane:")).replace(/\s+/g, "");
+  assert.ok(worktreeBlock.endsWith("x".repeat(600)), "the whole value is shown, wrapped over several lines");
+  for (const name of names) {
+    assert.ok(text.includes(name), `every deletion target is displayed (${name})`);
+  }
+  assert.match(text, /Clone mode: keep work first\./);
+  assert.ok(text.split("\n").every((line) => line.length <= 100), "no line longer than the popup width");
+});
+
+test("wrapText breaks after commas or spaces and never drops a character", () => {
+  assert.deepEqual(wrapText("a, b, c", 4), ["a,", "b, c"]);
+  assert.deepEqual(wrapText("aa, bb, cc", 5), ["aa,", "bb,", "cc"]);
+  assert.ok(wrapText("herdr-claude-code-000000000001, herdr-claude-code-000000000002", 32).every((line) => line.length <= 32));
+  assert.deepEqual(wrapText("one two three", 8), ["one two", "three"]);
+  assert.deepEqual(wrapText("x".repeat(10), 4), ["xxxx", "xxxx", "xx"]);
+  assert.deepEqual(wrapText("", 4), [""]);
+  const long = Array.from({ length: 30 }, (_, index) => `name-${index}`).join(", ");
+  assert.equal(wrapText(long, 20).join(" ").replace(/\s+/g, " "), long);
 });
