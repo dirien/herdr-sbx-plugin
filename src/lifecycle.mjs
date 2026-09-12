@@ -22,6 +22,9 @@ import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneE
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["created", "prepared", "ready", "stopped"]);
 
+/** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
+export const NO_SANDBOX_STATES = new Set(["provisional", "missing"]);
+
 /**
  * Throws unless the path is an existing absolute directory.
  * @param {unknown} localPath
@@ -192,8 +195,13 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
 
   function runAttached(paneId, argv, { label, env = [], track }) {
     const entry = requirePaneEntry(stateDir, paneId);
-    if (!CONNECTABLE_STATES.has(entry.lifecycleState)) {
+    // Agent launches need a prepared sandbox. A shell only needs the sandbox to
+    // exist: it is the way to inspect and repair one whose preparation failed.
+    if (track && !CONNECTABLE_STATES.has(entry.lifecycleState)) {
       throw new PluginError("target", `Sandbox ${entry.sandboxName} is not ready (state: ${entry.lifecycleState}). Run start-agent or replace-sandbox first.`);
+    }
+    if (!track && NO_SANDBOX_STATES.has(entry.lifecycleState)) {
+      throw new PluginError("target", `Sandbox ${entry.sandboxName} does not exist yet (state: ${entry.lifecycleState}). Run reconnect or replace-sandbox first.`);
     }
     if (track) {
       updatePaneEntry(stateDir, paneId, { lifecycleState: "ready", lastError: null, lastConnectedAt: new Date().toISOString() });

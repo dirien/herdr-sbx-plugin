@@ -117,3 +117,19 @@ test("stop keeps a mapping that never finished preparing out of the connectable 
   assert.equal(f.mappings().panes["pane-2"].lastError, null);
   f.cleanup();
 });
+
+test("a shell opens in a sandbox whose preparation failed, but not before the sandbox exists", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "failed", lastError: { kind: "config", message: "setup script failed", at: "2026-09-12T00:00:00.000Z" } }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", lifecycleState: "missing" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.connect("pane-1"), (error) => error.errorKind === "target" && /is not ready \(state: failed\)/.test(error.message), "the agent still needs prepare");
+  assert.equal(lifecycle.shell("pane-1").exitCode, 0, "the shell is how a failed setup gets inspected");
+  const shellCall = f.sbxCalls().find((call) => call[0] === "exec");
+  assert.deepEqual(shellCall.slice(-3), ["--", "bash", "-l"]);
+  assert.equal(f.mappings().panes["pane-1"].lifecycleState, "failed", "a shell changes no lifecycle state");
+  assert.throws(() => lifecycle.shell("pane-2"), (error) => error.errorKind === "target" && /does not exist yet \(state: missing\)/.test(error.message));
+  f.cleanup();
+});
