@@ -58,23 +58,28 @@ function fail(mode, name = "unknown") {
 }
 
 const [subcommand, ...rest] = argv;
-const injected = failureFor(subcommand);
 const state = loadState();
+
+// Fails the invocation when a FAKE_SBX_FAIL rule matches this subcommand and sandbox.
+function maybeFail(name = null) {
+  const rule = failureFor(subcommand, name);
+  if (rule) fail(rule, name ?? "unknown");
+}
 
 switch (subcommand) {
   case "version": {
-    if (injected) fail(injected);
+    maybeFail();
     const fakeVersion = process.env.FAKE_SBX_VERSION ?? "0.42.1";
     process.stdout.write(`${JSON.stringify({ client: { version: fakeVersion }, server: { version: fakeVersion, state: "running" } })}\n`);
     break;
   }
   case "daemon": {
-    if (injected) fail(injected);
+    maybeFail();
     process.stdout.write(`${JSON.stringify({ running: true, socket: "/tmp/fake-sandboxd.sock" })}\n`);
     break;
   }
   case "ls": {
-    if (injected) fail(injected);
+    maybeFail();
     if (rest.includes("--json")) {
       process.stdout.write(`${JSON.stringify({ sandboxes: state.sandboxes })}\n`);
     } else {
@@ -85,7 +90,7 @@ switch (subcommand) {
   case "create": {
     const nameIndex = rest.indexOf("--name");
     const name = nameIndex === -1 ? "unnamed" : rest[nameIndex + 1];
-    if (injected) fail(injected, name);
+    maybeFail(name);
     const valued = new Set(["--name", "--template", "--kit", "--kit-arg", "--env", "--env-file", "--publish", "--cpus", "--memory", "--deny-network"]);
     const positionals = [];
     for (let index = 0; index < rest.length; index += 1) {
@@ -112,7 +117,7 @@ switch (subcommand) {
       commandStart += 1;
     }
     const command = rest.slice(commandStart);
-    if (injected) fail(injected, name);
+    maybeFail(name);
     const sandbox = state.sandboxes.find((item) => item.name === name);
     if (!sandbox) fail("not-found", name);
     sandbox.status = "running";
@@ -122,13 +127,19 @@ switch (subcommand) {
       const ran = spawnSync(command[0], command.slice(1), { stdio: "inherit" });
       process.exit(ran.status ?? 1);
     }
-    process.stdout.write(`exec ${name}: ${command.join(" ")}\n`);
-    process.exit(Number(process.env.FAKE_SBX_EXEC_EXIT ?? "0"));
+    const exit = Number(process.env.FAKE_SBX_EXEC_EXIT ?? "0");
+    if (process.env.FAKE_SBX_EXEC_OUTPUT) {
+      process.stderr.write(`${process.env.FAKE_SBX_EXEC_OUTPUT}\n`);
+    } else if (exit === 0) {
+      // Like the real CLI, a failing command prints only what the command printed: nothing for a missing one.
+      process.stdout.write(`exec ${name}: ${command.join(" ")}\n`);
+    }
+    process.exit(exit);
     break;
   }
   case "stop": {
     const name = rest[0];
-    if (injected) fail(injected, name);
+    maybeFail(name);
     const sandbox = state.sandboxes.find((item) => item.name === name);
     if (!sandbox) fail("not-found", name);
     sandbox.status = "stopped";
@@ -139,8 +150,7 @@ switch (subcommand) {
   case "rm": {
     const names = rest.filter((item) => !item.startsWith("--"));
     for (const name of names) {
-      const rule = failureFor("rm", name);
-      if (rule) fail(rule, name);
+      maybeFail(name);
       const index = state.sandboxes.findIndex((item) => item.name === name);
       if (index === -1) fail("not-found", name);
       state.sandboxes.splice(index, 1);
@@ -150,16 +160,16 @@ switch (subcommand) {
     break;
   }
   case "cp": {
-    if (injected) fail(injected);
     const [source, destination] = rest.filter((item) => !item.startsWith("-"));
     const [name, sourcePath] = source.includes(":") ? [source.split(":")[0], source.slice(source.indexOf(":") + 1)] : [null, source];
+    maybeFail(name);
     if (name && !state.sandboxes.some((item) => item.name === name)) fail("not-found", name);
     copyFileSync(sourcePath, destination.includes(":") ? destination.slice(destination.indexOf(":") + 1) : destination);
     break;
   }
   case "ports": {
     const name = rest.find((item) => !item.startsWith("--"));
-    if (injected) fail(injected, name);
+    maybeFail(name);
     const sandbox = state.sandboxes.find((item) => item.name === name);
     if (!sandbox) fail("not-found", name);
     process.stdout.write(`${JSON.stringify({ ports: sandbox.ports ?? [] })}\n`);

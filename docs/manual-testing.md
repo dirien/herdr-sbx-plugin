@@ -69,7 +69,7 @@ CONFIG_DIR="$(herdr plugin config-dir sbx.sandbox)"
 printf '{ "agentKind": "claude-code" }\n' > "$CONFIG_DIR/config.json"
 ```
 
-Expect: `plugin list` shows `sbx.sandbox` enabled, `action list` shows ten
+Expect: `plugin list` shows `sbx.sandbox` enabled, `action list` shows fourteen
 actions (`doctor` through `forget-mapping`). If linking fails with a version
 message, note the Herdr version: the manifest requires 0.9.0.
 

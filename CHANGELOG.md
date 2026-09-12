@@ -5,7 +5,8 @@
 Initial release.
 
 - Actions: `doctor`, `install-keybindings`, `start-agent`, `reconnect`, `open-shell`, `fetch-changes`,
-  `stop`, `info`, `list-sandboxes`, `replace-sandbox`, `forget-mapping`.
+  `stop`, `info`, `list-sandboxes`, `prune-mappings`, `sandboxes`, `open-port`, `replace-sandbox`,
+  `forget-mapping`.
 - `worktree.removed` hook that offers to delete the sandboxes of a removed worktree.
 - Built-in adapters for Claude Code, Codex, Gemini CLI, OpenCode, Copilot CLI
   and Cursor Agent, plus custom agents with setup scripts.

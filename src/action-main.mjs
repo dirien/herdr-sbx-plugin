@@ -11,7 +11,7 @@ import { resolveAgent } from "./agents.mjs";
 import { loadConfig } from "./config.mjs";
 import { requestDeletionConfirmation } from "./confirm.mjs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { BRIDGE_START_TIMEOUT_ENV, BRIDGE_START_TIMEOUT_MS, CONFIRMATION_TIMEOUT_ENV, CONFIRMATION_TTL_MS, MIN_SBX_VERSION } from "./constants.mjs";
+import { BRIDGE_START_TIMEOUT_ENV, BRIDGE_START_TIMEOUT_MS, CONFIRMATION_TIMEOUT_ENV, CONFIRMATION_TTL_MS, KEYBINDING_INSTALL_TIMEOUT_MS, MIN_SBX_VERSION } from "./constants.mjs";
 import { isInside, readContext, readPluginEnv, requirePluginDirs, resolveMountRoot, resolvePaneId, resolveWorkdir } from "./context.mjs";
 import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { createHerdrClient } from "./herdr.mjs";
@@ -282,6 +282,16 @@ function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
     moved.deletedSandboxNames = [...new Set([...(moved.deletedSandboxNames ?? []), ...(displaced.deletedSandboxNames ?? [])])];
     process.stderr.write(`pane ${paneId} was mapped to ${displaced.sandboxName}; it stays deletable through the adopted mapping\n`);
   }
+  if (paneId !== target.entry.paneId && abandonIf && abandonIf()) {
+    // Checked again right before the move is written, so the window in which a
+    // late acknowledgement can be lost is the two file writes below.
+    try {
+      deps.herdr.closePane(paneId);
+    } catch (error) {
+      process.stderr.write(`could not close the unused pane ${paneId}: ${errorMessageOf(error)}\n`);
+    }
+    return null;
+  }
   savePaneEntry(deps.pluginEnv.stateDir, paneId, moved);
   // Herdr may hand out the orphan's own id again; then the saved entry is the one to keep.
   if (paneId !== target.entry.paneId) {
@@ -387,14 +397,21 @@ const ACTIONS = {
       cwd: deps.pluginEnv.pluginRoot,
       encoding: "utf8",
       env: { ...deps.env, HERDR_BIN_PATH: deps.pluginEnv.herdrBin },
+      timeout: KEYBINDING_INSTALL_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.error) {
-      throw new PluginError("startup", `Could not run scripts/install-keybindings.sh: ${result.error.message}`);
-    }
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    if (result.error) {
+      const timedOut = /** @type {any} */ (result.error).code === "ETIMEDOUT";
+      throw new PluginError("startup", timedOut
+        ? `scripts/install-keybindings.sh did not finish within ${Math.round(KEYBINDING_INSTALL_TIMEOUT_MS / 1000)}s (Herdr's config check or reload hung) and was killed.`
+        : `Could not run scripts/install-keybindings.sh: ${result.error.message}`, { output });
+    }
     const report = parseKeybindingReport(result.stdout ?? "");
     if (result.status !== 0) {
-      throw new PluginError("config", `scripts/install-keybindings.sh exited with status ${result.status}; the Herdr config in ${report.configPath ?? "the default location"} was not reloaded.`, { output });
+      const restored = report.warnings.some((warning) => /restored to its previous content/.test(warning));
+      throw new PluginError("config", `scripts/install-keybindings.sh exited with status ${result.status}; ${report.configPath ?? "the Herdr config"} ${restored ? "was restored to its previous content" : "was left as it was"} and Herdr was not reloaded.`, { output });
     }
     return { payload: { ...report }, lines: output.split("\n").filter(Boolean) };
   },
@@ -435,7 +452,8 @@ const ACTIONS = {
     // Re-homed or never-prepared mappings go through prepare so a deleted VM is recreated rather than failing.
     const mode = target.orphan || !CONNECTABLE_STATES.has(entry.lifecycleState) ? "start" : "connect";
     const started = await startBridge(deps, { paneId, mode, agent, label });
-    return { payload: { paneId: started.paneId, sandboxName: entry.sandboxName, agentKind: entry.agentKind, mode, adoptedFrom: target.orphan ? entry.paneId : null, movedTo: started.movedTo } };
+    // A bridge moved to a fresh pane always goes through prepare, whatever was planned.
+    return { payload: { paneId: started.paneId, sandboxName: entry.sandboxName, agentKind: entry.agentKind, mode: started.movedTo ? "start" : mode, adoptedFrom: target.orphan ? entry.paneId : null, movedTo: started.movedTo } };
   },
 
   "open-shell"(deps) {
@@ -612,7 +630,7 @@ const ACTIONS = {
     outcome.mappings = outcome.mappings.map((item) => ({ ...item, paneExists: paneIds ? paneIds.has(item.paneId) : null, paneError }));
     const lines = outcome.mappings.length === 0
       ? ["No sandbox mappings."]
-      : outcome.mappings.map((item) => `${item.paneId}${item.paneExists ? "" : " (pane gone)"}\t${item.sandboxName}\t${item.agentKind}\t${item.lifecycleState}\t${item.exists === null ? "unknown" : item.exists ? item.status ?? "exists" : "MISSING"}\t${item.localPath}`);
+      : outcome.mappings.map((item) => `${item.paneId}${item.paneExists === false ? " (pane gone)" : item.paneExists === null ? " (pane ?)" : ""}\t${item.sandboxName}\t${item.agentKind}\t${item.lifecycleState}\t${item.exists === null ? "unknown" : item.exists ? item.status ?? "exists" : "MISSING"}\t${item.localPath}`);
     if (outcome.sandboxError) {
       lines.push(`sbx ls failed (${outcome.sandboxError.kind}): ${outcome.sandboxError.message}`);
     }

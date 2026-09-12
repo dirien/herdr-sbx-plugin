@@ -76,6 +76,10 @@ test("README documents every action, config key, agent kind and error kind", () 
   for (const id of ACTION_IDS) {
     assert.ok(readme.includes(`\`${id}\``), `README mentions action ${id}`);
   }
+  const words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
+  const count = words[ACTION_IDS.length];
+  assert.ok(readme.includes(`# ${count} actions`), `README's install check names ${count} actions`);
+  assert.ok(readFileSync(path.join(ROOT, "docs", "manual-testing.md"), "utf8").includes(`shows ${count}\nactions`), `docs/manual-testing.md names ${count} actions`);
   for (const key of Object.keys(CONFIG_DEFAULTS)) {
     assert.ok(readme.includes(`\`${key}\``), `README mentions config key ${key}`);
   }

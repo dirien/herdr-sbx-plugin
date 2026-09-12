@@ -127,7 +127,17 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
           log(result.output.trim());
         }
       } catch (error) {
-        if (errorKindOf(error) !== "conflict") {
+        // "conflict" also covers a published host port that is taken; only a
+        // sandbox that sbx really lists can be reused.
+        let exists = false;
+        if (errorKindOf(error) === "conflict") {
+          try {
+            exists = sbx.findSandbox(entry.sandboxName) !== null;
+          } catch {
+            exists = false;
+          }
+        }
+        if (!exists) {
           updatePaneEntry(stateDir, paneId, { lifecycleState: "failed", lastError: describeError(error) });
           throw error;
         }
@@ -165,8 +175,9 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     if (probe.status !== 0) {
       // sbx exec fails for its own reasons too (daemon gone, VM did not boot,
       // credentials expired); only a silent miss means the command is absent.
-      const kind = classifyFailure(probe.output);
-      if (kind !== "unknown") {
+      // A missing command is a silent non-zero exit; anything sbx prints is sbx failing.
+      const kind = probe.output.trim() === "" ? "unknown" : classifyFailure(probe.output);
+      if (kind !== "unknown" || probe.output.trim() !== "") {
         const error = new PluginError(kind, `Could not check for "${agent.command[0]}" inside sandbox ${entry.sandboxName}; sbx exec failed.`, { output: probe.output });
         updatePaneEntry(stateDir, paneId, { lastError: describeError(error) });
         throw error;

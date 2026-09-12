@@ -64,3 +64,8 @@ for (const [kind, profile, pattern] of invalidProfiles) {
     assert.throws(() => validateCustomAgent(kind, profile), (error) => error.errorKind === "config" && pattern.test(error.message));
   });
 }
+
+test("resolveAgent rejects prototype property names as agent kinds", () => {
+  assert.throws(() => resolveAgent({ agentKind: "constructor", customAgents: {}, agentArgs: {} }), (error) => error.errorKind === "config" && /Unknown agentKind "constructor"/.test(error.message));
+  assert.throws(() => resolveAgent({ agentKind: "__proto__", customAgents: {}, agentArgs: {} }), (error) => error.errorKind === "config");
+});

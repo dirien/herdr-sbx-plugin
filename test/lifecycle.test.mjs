@@ -76,3 +76,27 @@ test("a captured sbx call that outlives its timeout is killed and reported as a 
   assert.equal(patient.version().json.client.version, "0.42.1", "an empty override means the default timeout");
   f.cleanup();
 });
+
+test("prepare reuses a sandbox on a create conflict only when sbx really lists it", () => {
+  const f = createFixture({ panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "provisional" }) }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env({ FAKE_SBX_FAIL: "create:conflict" }) });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.prepare("pane-1"), (error) => error.errorKind === "conflict", "a port clash reads as conflict too, and there is no sandbox to reuse");
+  assert.equal(f.mappings().panes["pane-1"].lifecycleState, "failed");
+  assert.equal(f.mappings().panes["pane-1"].lastError.kind, "conflict");
+
+  const existing = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "provisional" }) }) });
+  const reusing = createLifecycle({ stateDir: existing.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx: createSbxClient({ bin: FAKE_SBX, env: existing.env({ FAKE_SBX_FAIL: "create:conflict" }) }), log: () => {} });
+  assert.equal(reusing.prepare("pane-1").entry.lifecycleState, "prepared");
+  f.cleanup();
+  existing.cleanup();
+});
+
+test("prepare reports an exec failure that printed something as unknown rather than a missing command", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "created" }) }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env({ FAKE_SBX_EXEC_EXIT: "3", FAKE_SBX_EXEC_OUTPUT: "rpc error: transport closed while attaching" }) });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.prepare("pane-1"), (error) => error.errorKind === "unknown" && /sbx exec failed/.test(error.message) && /transport closed/.test(error.output));
+  assert.equal(f.mappings().panes["pane-1"].lifecycleState, "created", "not marked failed: the sandbox may be fine");
+  f.cleanup();
+});

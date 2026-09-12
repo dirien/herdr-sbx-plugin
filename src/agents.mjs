@@ -110,7 +110,7 @@ export function availableAgents(config) {
  */
 export function resolveAgent(config) {
   const agents = availableAgents(config);
-  const adapter = agents[config.agentKind];
+  const adapter = typeof config.agentKind === "string" && Object.hasOwn(agents, config.agentKind) ? agents[config.agentKind] : undefined;
   if (!adapter) {
     throw new PluginError("config", `Unknown agentKind "${config.agentKind}". Available: ${Object.keys(agents).join(", ")}.`);
   }

@@ -62,7 +62,7 @@ skip the confirmation prompt.
 Verify what got registered and that `sbx` answers:
 
 ```bash
-herdr plugin action list --plugin sbx.sandbox         # thirteen actions
+herdr plugin action list --plugin sbx.sandbox         # fourteen actions
 herdr plugin action invoke doctor --plugin sbx.sandbox
 herdr plugin log list --plugin sbx.sandbox --limit 1  # "ok":true in the first stdout line
 ```
@@ -132,9 +132,11 @@ Pane actions use the focused pane. When that pane has no sandbox but the
 workspace has exactly one, the plugin uses that one, so running an action from
 the pane next to the agent works. When the mapped pane no longer exists, for
 example after a Herdr restart, `reconnect` and `replace-sandbox` open a new
-pane next to you and move the sandbox there (`movedTo` in the result; an old
-pane that still exists is relabelled `(moved to ...)`), and `list-sandboxes`
-marks such mappings with `pane gone`. `reconnect`,
+pane next to you and move the sandbox there (`adoptedFrom` in the result), and
+`list-sandboxes` marks such mappings with `pane gone`. When a pane exists but
+swallows the typed command, for example because it is not at a shell prompt,
+`reconnect` starts in a fresh pane after four seconds instead (`movedTo`) and
+relabels the old one `(moved to ...)`. `reconnect`,
 `replace-sandbox` and `forget-mapping` refuse to run while Herdr still detects
 an agent in the target pane. Stopping a sandbox while the agent is attached
 ends that session.
@@ -166,7 +168,9 @@ description = "start an agent in a Docker Sandbox"
 Those four chords are unused by Herdr 0.9. `prefix+shift+d` and
 `prefix+shift+r` look tempting but close the workspace and reload the config,
 so the installer leaves an existing binding on such a chord alone and reports
-it instead of replacing it. Bind other actions the same way, then run
+it instead of replacing it. A chord that another command already uses is
+reported the same way and not taken. If `herdr config check` rejects the
+result, the file is restored from a backup and the action fails with `config`. Bind other actions the same way, then run
 `herdr config check` and `herdr server reload-config`. `prefix+?` inside Herdr
 lists what is active (the default prefix is `ctrl+b`), and
 `herdr config reset-keys` removes every custom binding.
@@ -341,7 +345,7 @@ carries these fields:
 | `doctor` | `sbxBin`, `node`, `pluginRoot`, `stateDir`, `configDir`, `version`, `versionWarning`, `daemon`, `agentKind`, `workspaceMode`, `template` |
 | `install-keybindings` | `configPath`, `added` and `existing` (each entry has `key` and `action`), `warnings`, `reloaded` |
 | `start-agent` | `paneId`, `sourcePaneId`, `sandboxName`, `agentKind`, `localPath`, `workdir`, `workspaceMode`, `openIn`, `previousSandboxNames` |
-| `reconnect` | `paneId`, `sandboxName`, `agentKind`, `mode` (`connect`, or `start` when the sandbox still has to be prepared), `adoptedFrom` (the old pane id when the sandbox was moved to a new pane), `movedTo` |
+| `reconnect` | `paneId`, `sandboxName`, `agentKind`, `mode` (`connect`, or `start` when the sandbox still has to be prepared or the bridge was moved), `adoptedFrom` (the old pane id when a mapping whose pane was gone got a new one), `movedTo` (the new pane id when a live pane swallowed the typed command) |
 | `open-shell` | `paneId` (the shell pane), `mappedPaneId`, `sandboxName` |
 | `fetch-changes` | `paneId`, `remote`, `transport` (`remote` or `bundle`), `branches`, `keep` (a `git branch` command per branch) |
 | `stop` | `paneId`, `sandboxName` |
@@ -349,7 +353,7 @@ carries these fields:
 | `prune-mappings` | `pruned`, `kept` (each with `paneId`, `sandboxName`, and a `reason` for kept ones), `deleted`, `failures` (deletions that failed after DELETE, each with `errorKind` and `message`), `orphansConfirmed` |
 | `sandboxes` | `entrypoint` |
 | `open-port` | `sandboxName`, `sandboxPort`, `hostPort`, `url`, `opened`, `opener` |
-| `list-sandboxes` | `mappings` (each with `paneId`, `paneExists`, `sandboxName`, `agentKind`, `localPath`, `workdir`, `workspaceMode`, `lifecycleState`, `exists`, `status`), `sandboxError` |
+| `list-sandboxes` | `mappings` (each with `paneId`, `paneExists` (`null` with a `paneError` when Herdr could not list its panes), `sandboxName`, `agentKind`, `localPath`, `workdir`, `workspaceMode`, `lifecycleState`, `exists`, `status`), `sandboxError` |
 | `replace-sandbox` | `paneId`, `sandboxName`, `agentKind`, `deleted`, `alreadyMissing`, `movedTo` |
 | `forget-mapping` | `paneId`, `sandboxName`, `deleted`, `alreadyMissing` |
 
@@ -358,7 +362,7 @@ CLI `output` trimmed to 4000 characters when there was any:
 
 | `errorKind` | Meaning |
 | --- | --- |
-| `not-found` | The sandbox no longer exists, or for `fetch-changes` the git remote is missing. `stop` and a failed attach mark the mapping `missing`. |
+| `not-found` | The sandbox no longer exists, or for `fetch-changes` the mounted directory is not a git repository. `stop` and a failed attach mark the mapping `missing`. |
 | `daemon` | `sandboxd` is not running or unreachable, or a captured `sbx` call was killed after its timeout. |
 | `authentication` | `sbx` wants you to run `sbx login`. |
 | `conflict` | Herdr still detects an agent in the pane, `sbx` reported a name clash, or a mapping changed while a confirmation popup was open. |
@@ -451,7 +455,7 @@ The tests run the real scripts as child processes against fake `sbx` and
 | Path | Purpose |
 | --- | --- |
 | `herdr-plugin.toml` | Manifest: actions, the `worktree.removed` hook, the popup and overlay panes, the port link handler |
-| `bin/run.sh`, `scripts/write-node-path.sh` | Node shim and the build step that records the node path |
+| `bin/run.sh`, `scripts/write-node-path.sh` | Node shim and the build step that records the path of a Node 20+ binary |
 | `scripts/install-keybindings.sh` | Adds key bindings to the Herdr config and reloads it; the `install-keybindings` action runs it |
 | `src/action.mjs` | Entry point that always prints the result marker |
 | `src/action-main.mjs` | Action handlers |

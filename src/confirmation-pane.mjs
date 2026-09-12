@@ -71,7 +71,12 @@ export async function runConfirmationPopup(env = process.env, streams = { input:
   }
   // Paths and names come from the file system and older state files; strip
   // control characters so nothing can redraw the one prompt that authorises a deletion.
-  const shown = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, "?");
+  // C0 and C1 controls (CSI and OSC live in C1 for a UTF-8 terminal) and the
+  // Unicode line separators are replaced; long values are cut so the prompt stays on screen.
+  const shown = (value) => {
+    const text = String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "?");
+    return text.length > 400 ? `${text.slice(0, 397)}...` : text;
+  };
   write("Docker Sandbox deletion");
   write("");
   write(`  action:   ${shown(request.action)}`);

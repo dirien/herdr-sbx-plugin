@@ -77,14 +77,32 @@ test("the shim and the build script need nothing but shell builtins and pick the
   assert.equal(bare.stderr, "", "no missing-command noise from dirname or head");
 
   const home = mkdtempSync(path.join(tmpdir(), "herdr-sbx-nvm-"));
+  const fakeNode = (file, version) => {
+    spawnSync("mkdir", ["-p", path.dirname(file)]);
+    writeFileSync(file, `#!/bin/sh\necho ${version}\n`);
+    chmodSync(file, 0o755);
+  };
   for (const version of ["v9.11.2", "v20.11.0", "v20.9.0", "not-a-version"]) {
-    const bin = path.join(home, ".nvm", "versions", "node", version, "bin");
-    spawnSync("mkdir", ["-p", bin]);
-    writeFileSync(path.join(bin, "node"), "#!/bin/sh\necho fake\n");
-    chmodSync(path.join(bin, "node"), 0o755);
+    fakeNode(path.join(home, ".nvm", "versions", "node", version, "bin", "node"), version.replace(/^v/, ""));
   }
   const picked = spawnSync("/bin/sh", [path.join(ROOT, "scripts", "write-node-path.sh"), path.join(dir, "picked")], { encoding: "utf8", env: { PATH: "/nonexistent", HOME: home, HERDR_SBX_NODE_CANDIDATES: `${home}/none/node` } });
   assert.equal(picked.status, 0, picked.stderr);
   assert.equal(picked.stderr, "");
   assert.equal(readFileSync(path.join(dir, "picked"), "utf8").trim(), path.join(home, ".nvm", "versions", "node", "v20.11.0", "bin", "node"));
+});
+
+test("the build script skips a node that is too old and warns when nothing newer exists", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-old-node-"));
+  const old = path.join(dir, "old", "node");
+  spawnSync("mkdir", ["-p", path.dirname(old)]);
+  writeFileSync(old, "#!/bin/sh\necho 12.22.12\n");
+  chmodSync(old, 0o755);
+  const newer = spawnSync("/bin/sh", [path.join(ROOT, "scripts", "write-node-path.sh"), path.join(dir, "node-path")], { encoding: "utf8", env: { PATH: "/nonexistent", HOME: dir, HERDR_SBX_NODE_CANDIDATES: `${old} ${process.execPath}` } });
+  assert.equal(newer.status, 0, newer.stderr);
+  assert.equal(newer.stderr, "");
+  assert.equal(readFileSync(path.join(dir, "node-path"), "utf8").trim(), process.execPath, "an old node earlier in the list does not win");
+  const onlyOld = spawnSync("/bin/sh", [path.join(ROOT, "scripts", "write-node-path.sh"), path.join(dir, "node-path")], { encoding: "utf8", env: { PATH: "/nonexistent", HOME: dir, HERDR_SBX_NODE_CANDIDATES: old } });
+  assert.equal(onlyOld.status, 0, onlyOld.stderr);
+  assert.match(onlyOld.stderr, /node 12\.22\.12 at .* is older than 20/);
+  assert.equal(readFileSync(path.join(dir, "node-path"), "utf8").trim(), old, "recorded anyway so the user sees node's own error rather than none");
 });

@@ -160,3 +160,21 @@ test("the popup strips control characters from the names it displays", async () 
   assert.match(text, /worktree: \/w\/\?\[2J\?\[Hfake/);
   assert.match(text, /sandbox:  herdr-x-1\?\?  consequence: nothing happens/);
 });
+
+test("the popup also strips C1 controls and cuts very long values", async () => {
+  const CSI = String.fromCharCode(0x9b);
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-popup-"));
+  const requestId = createConfirmationRequest(dir, { ...DETAILS, localPath: `/w/${CSI}2J${"x".repeat(600)}` }, 60_000);
+  const input = new PassThrough();
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk) => {
+    text += chunk;
+  });
+  const running = runConfirmationPopup({ HERDR_SBX_CONFIRMATION_ID: requestId, HERDR_PLUGIN_STATE_DIR: dir }, { input, output });
+  input.write("no\n");
+  await running;
+  assert.ok(!text.includes(CSI));
+  assert.match(text, /worktree: \/w\/\?2Jx+\.\.\.$/m);
+  assert.ok(!text.includes("x".repeat(400)));
+});

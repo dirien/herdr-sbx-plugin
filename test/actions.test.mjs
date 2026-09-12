@@ -868,16 +868,54 @@ test("install-keybindings resolves the config like Herdr and keeps hand-written 
   f.cleanup();
 });
 
-test("install-keybindings fails with a config kind when Herdr rejects the config", () => {
+test("install-keybindings restores the config when Herdr rejects it", () => {
   const f = createFixture();
   const configPath = path.join(f.root, "config.toml");
+  writeFileSync(configPath, "[general]\nprefix = \"ctrl+b\"\n");
   const { status, result } = runAction(f, "install-keybindings", { env: { HERDR_CONFIG_PATH: configPath, FAKE_HERDR_FAIL: "config check" } });
   assert.equal(status, 1);
   assert.equal(result.ok, false);
   assert.equal(result.errorKind, "config");
-  assert.match(result.message, /was not reloaded/);
+  assert.match(result.message, /was restored to its previous content and Herdr was not reloaded/);
   assert.match(result.output, /fake herdr refuses config check/);
-  assert.equal(readFileSync(configPath, "utf8").match(/\[\[keys\.command\]\]/g).length, 4, "bindings stay written; only the reload failed");
+  assert.equal(readFileSync(configPath, "utf8"), "[general]\nprefix = \"ctrl+b\"\n", "the file is exactly what it was before");
+  assert.deepEqual(readdirSync(f.root).filter((name) => name.includes("sbx-backup")), [], "no backup file is left behind");
+  f.cleanup();
+});
+
+test("install-keybindings leaves a chord alone when another command already uses it", () => {
+  const f = createFixture();
+  const configPath = path.join(f.root, "config.toml");
+  writeFileSync(configPath, [
+    "[[keys.command]]",
+    "key = 'prefix+shift+o'",
+    "type = 'plugin_action'",
+    "command = 'other.plugin.overlay'",
+    "",
+    "[other]",
+    'key = "prefix+shift+s"',
+    "",
+  ].join("\n"));
+  const { status, result } = runAction(f, "install-keybindings", { env: { HERDR_CONFIG_PATH: configPath } });
+  assert.equal(status, 0, result.message);
+  assert.deepEqual(result.added.map((item) => item.action), ["start-agent", "reconnect", "open-shell"], "a key line outside a keys.command block does not count as taken");
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /prefix\+shift\+o is already bound to other\.plugin\.overlay/);
+  assert.ok(!readFileSync(configPath, "utf8").includes("sbx.sandbox.sandboxes"));
+  f.cleanup();
+});
+
+test("list-sandboxes tells a missing pane from a failed pane check", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const failed = runAction(f, "list-sandboxes", { env: { FAKE_HERDR_FAIL: "pane list" } });
+  assert.equal(failed.result.ok, true);
+  assert.equal(failed.result.mappings[0].paneExists, null);
+  assert.match(failed.result.mappings[0].paneError, /pane list/);
+  assert.match(failed.stdout, /pane-1 \(pane \?\)\t/);
+  assert.ok(!failed.stdout.includes("pane gone"));
+  const gone = runAction(f, "list-sandboxes", { env: { FAKE_HERDR_MISSING_PANES: "pane-1" } });
+  assert.equal(gone.result.mappings[0].paneExists, false);
+  assert.match(gone.stdout, /pane-1 \(pane gone\)\t/);
   f.cleanup();
 });
 
@@ -918,6 +956,7 @@ test("a bridge that acknowledges while its replacement pane opens keeps the mapp
   const moved = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "wQ:p3": mappingFor({ worktree: p.worktree }, { paneId: "wQ:p3", workspaceId: "wQ" }) }) });
   const outcome = runAction(moved, "reconnect", { context: { focused_pane_id: "wQ:p5", workspace_id: "wQ" }, env: { FAKE_HERDR_BRIDGE_STARTS: "0" } });
   assert.equal(outcome.result.movedTo, "pane-new-1");
+  assert.equal(outcome.result.mode, "start", "a moved bridge always prepares, whatever was planned");
   const renames = moved.herdrCalls().filter((call) => call[1] === "rename").map((call) => call.slice(2));
   assert.ok(renames.some(([paneId, label]) => paneId === "wQ:p3" && / \(moved to pane-new-1\)$/.test(label)), JSON.stringify(renames));
   f.cleanup();

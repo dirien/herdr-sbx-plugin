@@ -113,7 +113,8 @@ export function createOverlayClients({ sbxBin, herdrBin, env = process.env }) {
         if (result.status !== 0) {
           throw new PluginError("unknown", `herdr pane list failed (exit ${result.status})`, { output: result.output });
         }
-        const panes = parseJson(result.stdout, "herdr pane list")?.result?.panes;
+        const parsed = parseJson(result.stdout, "herdr pane list");
+        const panes = parsed?.result?.panes ?? parsed?.panes;
         if (!Array.isArray(panes)) {
           throw new PluginError("unknown", "herdr pane list did not return a pane list.", { output: result.stdout });
         }
