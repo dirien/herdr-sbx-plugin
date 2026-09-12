@@ -196,3 +196,26 @@ test("wrapText breaks after commas or spaces and never drops a character", () =>
   const long = Array.from({ length: 30 }, (_, index) => `name-${index}`).join(", ");
   assert.equal(wrapText(long, 20).join(" ").replace(/\s+/g, " "), long);
 });
+
+test("the popup entry point records a cancellation on SIGHUP, as when its pane is closed", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-popup-"));
+  const requestId = createConfirmationRequest(dir, DETAILS);
+  const popup = spawnPopup(dir, requestId);
+  await popup.prompted;
+  popup.child.kill("SIGHUP");
+  const { code } = await popup.closed;
+  assert.equal(code, 130);
+  assert.equal(readConfirmationDecision(dir, requestId).decision, "cancelled");
+});
+
+test("requestDeletionConfirmation honours an answer written during its last poll interval", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-popup-"));
+  const herdr = {
+    openPluginPane({ env }) {
+      const requestId = env.HERDR_SBX_CONFIRMATION_ID;
+      setTimeout(() => writeConfirmationDecision(dir, requestId, "confirmed"), 250);
+    },
+  };
+  const confirmed = await requestDeletionConfirmation({ stateDir: dir, herdr, pluginId: "sbx.sandbox", details: DETAILS, timeoutMs: 300, pollMs: 1000 });
+  assert.equal(confirmed, true, "the decision landed after the loop's only sleep began but before the deadline passed");
+});

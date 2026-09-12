@@ -9,6 +9,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { getPaneEntry, savePaneEntry } from "../../src/state.mjs";
 
 const argv = process.argv.slice(2);
 const logFile = process.env.FAKE_SBX_LOG;
@@ -81,6 +82,11 @@ switch (subcommand) {
   }
   case "ls": {
     maybeFail();
+    if (process.env.FAKE_SBX_LS_TOUCH_PANE && process.env.HERDR_PLUGIN_STATE_DIR) {
+      // Emulate another process rewriting a mapping while this listing runs.
+      const touched = getPaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_LS_TOUCH_PANE);
+      if (touched) savePaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_LS_TOUCH_PANE, { ...touched, sandboxName: `${touched.sandboxName}-new` });
+    }
     if (rest.includes("--json")) {
       process.stdout.write(`${JSON.stringify({ sandboxes: state.sandboxes })}\n`);
     } else {

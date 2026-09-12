@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { deletePaneEntry, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, requirePaneEntry, savePaneEntry, updatePaneEntry } from "../src/state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, requirePaneEntry, savePaneEntry, updatePaneEntry } from "../src/state.mjs";
 
 function freshDir() {
   return mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
@@ -84,4 +84,19 @@ test("entriesForLocalPath still matches a removed worktree that was recorded und
   savePaneEntry(stateDir, "pane-1", { sandboxName: "herdr-x-1", localPath: path.join(dir, "real", "gone"), workdir: path.join(dir, "real", "gone"), agentKind: "claude-code", workspaceMode: "mount", lifecycleState: "ready" });
   assert.deepEqual(entriesForLocalPath(loadState(stateDir), path.join(dir, "alias", "gone")).map(([paneId]) => paneId), ["pane-1"]);
   assert.deepEqual(entriesForLocalPath(loadState(stateDir), path.join(dir, "alias", "other")), []);
+});
+
+test("deletePaneEntryIfUnchanged only removes the entry the caller read", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
+  const entry = { sandboxName: "herdr-x-1", localPath: "/w", workdir: "/w", agentKind: "claude-code", workspaceMode: "mount", lifecycleState: "ready" };
+  savePaneEntry(stateDir, "pane-1", entry);
+  const seen = getPaneEntry(stateDir, "pane-1");
+  savePaneEntry(stateDir, "pane-1", { ...seen, sandboxName: "herdr-x-2" });
+  assert.equal(deletePaneEntryIfUnchanged(stateDir, "pane-1", seen), false, "rewritten since it was read, even within the same millisecond");
+  assert.equal(getPaneEntry(stateDir, "pane-1").sandboxName, "herdr-x-2");
+  const current = getPaneEntry(stateDir, "pane-1");
+  assert.notEqual(current.revision, seen.revision);
+  assert.equal(deletePaneEntryIfUnchanged(stateDir, "pane-1", current), true);
+  assert.equal(getPaneEntry(stateDir, "pane-1"), null);
+  assert.equal(deletePaneEntryIfUnchanged(stateDir, "pane-1", current), false, "already gone");
 });

@@ -7,7 +7,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveAgent } from "./agents.mjs";
@@ -21,6 +21,28 @@ import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneE
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
+
+/**
+ * Whether the bridge process that last acknowledged a mapping is still alive.
+ * The bridge lives exactly as long as the preparation and the attached agent
+ * session, so a live one means the sandbox is busy even before Herdr can see
+ * an agent in the pane.
+ * @param {{bridgePid?: number|null}} entry
+ * @returns {boolean}
+ */
+export function bridgeIsRunning(entry) {
+  const pid = Number(entry?.bridgePid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else; only ESRCH means gone.
+    return /** @type {any} */ (error).code === "EPERM";
+  }
+}
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
 export const NO_SANDBOX_STATES = new Set(["provisional", "missing"]);
@@ -149,6 +171,18 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       }
     }
     if (!reused) {
+      // The mapping may have been forgotten while sbx create ran for minutes;
+      // a sandbox nobody tracks must not be left behind.
+      const still = getPaneEntry(stateDir, paneId);
+      if (!still || still.sandboxName !== entry.sandboxName) {
+        log(`The mapping for pane ${paneId} disappeared while ${entry.sandboxName} was being created; deleting the sandbox again.`);
+        try {
+          sbx.runChecked(["rm", "--force", entry.sandboxName], `deleting the orphaned sandbox ${entry.sandboxName}`);
+        } catch (error) {
+          log(`Could not delete ${entry.sandboxName}: ${errorMessageOf(error)}. Remove it with "sbx rm -f ${entry.sandboxName}".`);
+        }
+        throw new PluginError("conflict", `The mapping for pane ${paneId} was removed while sandbox ${entry.sandboxName} was being created; the sandbox was deleted again.`);
+      }
       // A recreated sandbox must not stay on the deletion checkpoint, or a later
       // destroy would skip it, and its setup has to run again in the new VM.
       const deletedSandboxNames = (entry.deletedSandboxNames ?? []).filter((name) => name !== entry.sandboxName);
@@ -421,7 +455,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string|null} [launchId]
    */
   function acknowledgeBridge(paneId, launchId = null) {
-    updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId });
+    updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid });
   }
 
   /**
@@ -526,7 +560,9 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     // Unique on both sides, so two overlapping fetches never delete each other's bundle.
     const token = `${process.pid}-${randomBytes(4).toString("hex")}`;
     const inSandbox = `/tmp/herdr-sbx-${entry.sandboxName}-${token}.bundle`;
-    const onHost = path.join(tmpdir(), `herdr-sbx-${entry.sandboxName}-${token}.bundle`);
+    // A private directory (0700): the bundle holds every branch of the repository.
+    const hostDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-"));
+    const onHost = path.join(hostDir, "clone.bundle");
     try {
       sbx.runChecked(buildExecArgs({ sandboxName: entry.sandboxName, argv: ["git", "-C", entry.localPath, "bundle", "create", inSandbox, "--branches"] }), "bundling the sandbox clone");
       sbx.runChecked(["cp", `${entry.sandboxName}:${inSandbox}`, onHost], "copying the bundle out of the sandbox");
@@ -538,11 +574,9 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       return output;
     } finally {
       try {
-        unlinkSync(onHost);
+        rmSync(hostDir, { recursive: true, force: true });
       } catch (error) {
-        if (error.code !== "ENOENT") {
-          log(`could not remove ${onHost}: ${errorMessageOf(error)}`);
-        }
+        log(`could not remove ${hostDir}: ${errorMessageOf(error)}`);
       }
       // Cleanup must never change the fetch outcome: a timeout or spawn failure here is logged only.
       try {

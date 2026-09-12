@@ -37,7 +37,7 @@ export async function askWithTimeout(prompt, timeoutMs, streams) {
  * Runs the popup flow and returns the exit code.
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{input: NodeJS.ReadableStream, output: NodeJS.WritableStream}} [streams]
- * @param {{installSignalHandlers?: boolean}} [options] Install SIGINT/SIGTERM handlers that record a cancellation.
+ * @param {{installSignalHandlers?: boolean}} [options] Install SIGINT/SIGTERM/SIGHUP handlers that record a cancellation.
  * @returns {Promise<number>}
  */
 /** Line width the popup wraps its text to. */
@@ -95,6 +95,8 @@ export async function runConfirmationPopup(env = process.env, streams = { input:
   if (installSignalHandlers) {
     process.once("SIGINT", cancelOnSignal);
     process.once("SIGTERM", cancelOnSignal);
+    // Closing the popup pane delivers SIGHUP; without this the action waits out the whole TTL.
+    process.once("SIGHUP", cancelOnSignal);
   }
   // Paths and names come from the file system and older state files; strip
   // control characters (C0 and C1, where CSI and OSC live for a UTF-8 terminal,
@@ -125,6 +127,7 @@ export async function runConfirmationPopup(env = process.env, streams = { input:
   if (installSignalHandlers) {
     process.off("SIGINT", cancelOnSignal);
     process.off("SIGTERM", cancelOnSignal);
+    process.off("SIGHUP", cancelOnSignal);
   }
   const decision = answer !== null && answer.trim() === "DELETE" ? "confirmed" : "cancelled";
   try {

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import path from "node:path";
 import { test } from "node:test";
 import { CONFIG_DEFAULTS } from "../src/config.mjs";
-import { createLifecycle, deletionTargets } from "../src/lifecycle.mjs";
+import { bridgeIsRunning, createLifecycle, deletionTargets } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
-import { FAKE_SBX, createFixture, mappingFor } from "./helpers.mjs";
+import { deletePaneEntry } from "../src/state.mjs";
+import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, mappingFor } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -148,5 +151,38 @@ test("prepare takes a reused sandbox off the deletion checkpoint so a later dest
   assert.deepEqual(deletionTargets(prepared), [NAME, other]);
   assert.deepEqual(lifecycle.destroy("pane-1"), { deleted: [NAME, other], missing: [] });
   assert.deepEqual(f.sbxSandboxes(), []);
+  f.cleanup();
+});
+
+test("bridgeIsRunning tells a live bridge process from a dead or unknown one", () => {
+  assert.equal(bridgeIsRunning({ bridgePid: process.pid }), true);
+  assert.equal(bridgeIsRunning({ bridgePid: 2147483647 }), false);
+  assert.equal(bridgeIsRunning({ bridgePid: null }), false);
+  assert.equal(bridgeIsRunning({}), false);
+  assert.equal(bridgeIsRunning({ bridgePid: -1 }), false);
+});
+
+test("prepare deletes a sandbox whose mapping was forgotten while sbx create was running", async () => {
+  const f = createFixture({ panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "provisional" }) }) });
+  const bridge = spawn(process.execPath, [path.join(ROOT, "src", "bridge.mjs"), "start", "--state-dir", f.stateDir, "--config-dir", f.configDir, "--pane-id", "pane-1", "--herdr-bin", FAKE_HERDR, "--sbx-bin", FAKE_SBX], {
+    cwd: ROOT,
+    env: f.env({ FAKE_SBX_SLEEP_MS: "1500", FAKE_SBX_SLEEP_MATCH: "create --name" }),
+  });
+  let output = "";
+  bridge.stdout.on("data", (chunk) => { output += chunk; });
+  bridge.stderr.on("data", (chunk) => { output += chunk; });
+  // Wait until the bridge is inside sbx create, then forget the mapping the way forget-mapping does.
+  const started = Date.now();
+  while (!f.sbxCalls().some((call) => call[0] === "create") && Date.now() - started < 5000) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(f.sbxCalls().some((call) => call[0] === "create"), "sbx create started");
+  deletePaneEntry(f.stateDir, "pane-1");
+  const code = await new Promise((resolve) => bridge.on("exit", resolve));
+  assert.equal(code, 1);
+  assert.match(output, /disappeared while herdr-claude-code-abc123def456 was being created; deleting the sandbox again/);
+  assert.match(output, /was removed while sandbox .* was being created; the sandbox was deleted again/);
+  assert.deepEqual(f.sbxCalls().map((call) => call[0]), ["ls", "create", "rm"], "the just-created sandbox is removed, nothing else runs");
+  assert.deepEqual(f.sbxSandboxes(), [], "no untracked VM is left behind");
   f.cleanup();
 });

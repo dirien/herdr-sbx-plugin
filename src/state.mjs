@@ -100,7 +100,8 @@ export function savePaneEntry(stateDir, paneId, entry) {
   if (!LIFECYCLE_STATES.includes(entry.lifecycleState)) {
     throw new PluginError("startup", `Refusing to store unknown lifecycle state "${entry.lifecycleState}".`);
   }
-  const stored = { ...entry, version: STATE_VERSION, paneId, updatedAt: new Date().toISOString() };
+  // `revision` changes on every save, unlike `updatedAt`, which two saves in the same millisecond share.
+  const stored = { ...entry, version: STATE_VERSION, paneId, updatedAt: new Date().toISOString(), revision: randomBytes(6).toString("hex") };
   writeJsonAtomic(paneEntryPath(stateDir, paneId), stored);
   return stored;
 }
@@ -123,6 +124,24 @@ export function updatePaneEntry(stateDir, paneId, patch) {
  * @param {string} paneId
  * @returns {boolean} Whether an entry existed.
  */
+/**
+ * Removes the entry for a pane only if it is still the one the caller read
+ * (same `revision` and `updatedAt`), so a mapping rewritten in the meantime
+ * (Herdr handed the pane id to a new sandbox) survives a cleanup that decided
+ * on stale data.
+ * @param {string} stateDir
+ * @param {string} paneId
+ * @param {{revision?: string, updatedAt?: string}} seen The entry as the caller read it.
+ * @returns {boolean} Whether the entry was removed.
+ */
+export function deletePaneEntryIfUnchanged(stateDir, paneId, seen) {
+  const current = getPaneEntry(stateDir, paneId);
+  if (!current || current.revision !== seen?.revision || current.updatedAt !== seen?.updatedAt) {
+    return false;
+  }
+  return deletePaneEntry(stateDir, paneId);
+}
+
 export function deletePaneEntry(stateDir, paneId) {
   const file = paneEntryPath(stateDir, paneId);
   if (!existsSync(file)) {

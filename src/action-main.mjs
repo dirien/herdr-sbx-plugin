@@ -15,14 +15,14 @@ import { BRIDGE_START_TIMEOUT_ENV, BRIDGE_START_TIMEOUT_MS, CONFIRMATION_TIMEOUT
 import { isInside, readContext, readPluginEnv, requirePluginDirs, resolveMountRoot, resolvePaneId, resolveWorkdir } from "./context.mjs";
 import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { createHerdrClient } from "./herdr.mjs";
-import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, createLifecycle, deletionTargets } from "./lifecycle.mjs";
+import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, bridgeIsRunning, createLifecycle, deletionTargets } from "./lifecycle.mjs";
 import { hyperlink, parseSandboxPortUrl, sandboxPortUrl } from "./links.mjs";
 import { sandboxNameFor } from "./naming.mjs";
 import { openUrl } from "./open.mjs";
 import { emitResult, failurePayload } from "./result.mjs";
 import { createSbxClient } from "./sbx.mjs";
 import { buildPaneCommand, shellQuote } from "./shell.mjs";
-import { deletePaneEntry, getPaneEntry, loadState, savePaneEntry } from "./state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, getPaneEntry, loadState, savePaneEntry } from "./state.mjs";
 
 /**
  * Builds the command typed into a pane to run the bridge.
@@ -99,6 +99,11 @@ function refuseWhileAgentRuns(deps, target, verb) {
   if (target.orphan) {
     return;
   }
+  // A live bridge means the sandbox is being prepared or the agent is attached,
+  // whether or not Herdr can see an agent in the pane yet.
+  if (bridgeIsRunning(target.entry)) {
+    throw new PluginError("conflict", `Pane ${target.paneId} still runs the bridge for ${target.entry.sandboxName} (pid ${target.entry.bridgePid}, since ${target.entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Exit it before you ${verb}.`);
+  }
   const agent = target.viaWorkspace ? deps.herdr.getPane(target.paneId)?.agent ?? null : deps.context.focused_pane_agent ?? null;
   if (agent) {
     throw new PluginError("conflict", `Pane ${target.paneId} is still running agent "${agent}". Exit it before you ${verb}. If nothing is running there, clear a stale report with "herdr pane release-agent ${target.paneId} --source sbx.sandbox --agent ${agent}".`);
@@ -152,6 +157,12 @@ async function startBridge(deps, { paneId, mode, agent, label }) {
   const acknowledged = () => getPaneEntry(deps.pluginEnv.stateDir, paneId)?.bridgeLaunchId === launchId;
   const entry = getPaneEntry(deps.pluginEnv.stateDir, paneId);
   if (!entry || acknowledged()) {
+    return { paneId, movedTo: null };
+  }
+  if (bridgeIsRunning(entry)) {
+    // An earlier bridge still owns that pane's shell (preparing, or attached);
+    // the typed command waits in its input, and a second bridge must not race it.
+    process.stderr.write(`pane ${paneId} still runs an earlier bridge for ${entry.sandboxName} (pid ${entry.bridgePid}); leaving the mapping there\n`);
     return { paneId, movedTo: null };
   }
   process.stderr.write(`pane ${paneId} did not run the bridge command; starting in a new pane instead\n`);
@@ -522,8 +533,13 @@ const ACTIONS = {
       const paneExists = paneIds.has(entry.paneId);
       const sandboxExists = trackedNames(entry).some((name) => live.has(name));
       if (!paneExists && !sandboxExists) {
-        deletePaneEntry(deps.pluginEnv.stateDir, entry.paneId);
-        pruned.push({ paneId: entry.paneId, sandboxName: entry.sandboxName });
+        // The snapshot is older than two CLI calls; a mapping rewritten since (the
+        // pane id handed to a new sandbox) must not be pruned on stale data.
+        if (deletePaneEntryIfUnchanged(deps.pluginEnv.stateDir, entry.paneId, entry)) {
+          pruned.push({ paneId: entry.paneId, sandboxName: entry.sandboxName });
+        } else {
+          kept.push({ paneId: entry.paneId, sandboxName: entry.sandboxName, reason: "mapping changed while pruning; run prune-mappings again" });
+        }
       } else if (!paneExists) {
         kept.push({ paneId: entry.paneId, sandboxName: entry.sandboxName, reason: "sandbox still exists: reconnect adopts it, forget-mapping deletes it" });
       } else if (!sandboxExists) {
@@ -547,7 +563,19 @@ const ACTIONS = {
         timeoutMs: confirmationTimeout(deps.env),
       });
       if (orphansConfirmed) {
+        // The popup may have stayed open for a minute; a pane that came back in
+        // the meantime (Herdr restored it, or reconnect adopted the sandbox) is no orphan.
+        let panesNow;
+        try {
+          panesNow = new Set(deps.herdr.listPaneIds());
+        } catch (error) {
+          throw new PluginError(errorKindOf(error), `Cannot delete orphans without a fresh pane list: ${errorMessageOf(error)}`, { output: /** @type {any} */ (error)?.output });
+        }
         for (const item of orphans) {
+          if (panesNow.has(item.paneId)) {
+            item.reason = "pane came back while the confirmation was open; nothing deleted";
+            continue;
+          }
           // One failed deletion must not hide what already happened to the others.
           try {
             const outcome = deps.lifecycle.forget(item.paneId, { expectedNames: deletionTargets(state.panes[item.paneId]) });
@@ -671,7 +699,12 @@ const ACTIONS = {
       deletedSandboxNames: [...new Set([...(current.deletedSandboxNames ?? []), ...outcome.deleted, ...outcome.missing])],
     });
     const label = paneLabel(agent.kind, sandboxName);
-    deps.herdr.renamePane(paneId, label);
+    try {
+      deps.herdr.renamePane(paneId, label);
+    } catch (error) {
+      // The old sandboxes are gone already; a label is not worth failing the replacement.
+      process.stderr.write(`could not relabel pane ${paneId}: ${errorMessageOf(error)}\n`);
+    }
     const started = await startBridge(deps, { paneId, mode: "start", agent, label });
     deps.herdr.notify("Docker Sandbox replaced", `${entry.sandboxName} deleted, ${sandboxName} starting`);
     return { payload: { paneId: started.paneId, sandboxName, agentKind: agent.kind, deleted: outcome.deleted, alreadyMissing: outcome.missing, movedTo: started.movedTo } };

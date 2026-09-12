@@ -23,6 +23,15 @@ if (logFile) {
   appendFileSync(logFile, `${JSON.stringify({ argv })}\n`);
 }
 
+// FAKE_HERDR_MISSING_PANES_FILE overrides FAKE_HERDR_MISSING_PANES with a file that
+// can change between calls; FAKE_HERDR_RESTORE_PANES_ON_POPUP=1 empties it when
+// the confirmation popup opens, emulating panes that come back while it is open.
+function missingPanes() {
+  const file = process.env.FAKE_HERDR_MISSING_PANES_FILE;
+  const raw = file ? (existsSync(file) ? readFileSync(file, "utf8") : "") : process.env.FAKE_HERDR_MISSING_PANES ?? "";
+  return raw.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
 const command = argv.slice(0, 2).join(" ");
 const failing = (process.env.FAKE_HERDR_FAIL ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 if (failing.includes(command) || failing.includes(argv.slice(0, 3).join(" "))) {
@@ -45,15 +54,14 @@ if (command === "pane run" && process.env.FAKE_HERDR_BRIDGE_STARTS === "1" && pr
   process.stdout.write(`${JSON.stringify({ result: { ok: true } })}\n`);
 } else if (command === "pane get") {
   const paneId = argv[2];
-  const missing = (process.env.FAKE_HERDR_MISSING_PANES ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-  if (missing.includes(paneId)) {
+  if (missingPanes().includes(paneId)) {
     process.stderr.write(`${JSON.stringify({ error: { code: "pane_not_found", message: `pane ${paneId} not found` } })}\n`);
     process.exit(1);
   }
   const agent = process.env.FAKE_HERDR_PANE_AGENT;
   process.stdout.write(`${JSON.stringify({ result: { pane: { pane_id: paneId, agent_status: agent ? "working" : "unknown", ...(agent ? { agent } : {}) } } })}\n`);
 } else if (command === "pane list") {
-  const missing = (process.env.FAKE_HERDR_MISSING_PANES ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+  const missing = missingPanes();
   const ids = new Set((process.env.FAKE_HERDR_PANES ?? "").split(",").map((item) => item.trim()).filter(Boolean));
   if (process.env.HERDR_PLUGIN_STATE_DIR && existsSync(process.env.HERDR_PLUGIN_STATE_DIR)) {
     for (const paneId of Object.keys(loadState(process.env.HERDR_PLUGIN_STATE_DIR).panes)) ids.add(paneId);
@@ -77,6 +85,9 @@ if (command === "pane run" && process.env.FAKE_HERDR_BRIDGE_STARTS === "1" && pr
     process.stdout.write(`${JSON.stringify({ result: { pane: { pane_id: newPaneId } } })}\n`);
   }
 } else if (command === "plugin pane") {
+  if (process.env.FAKE_HERDR_RESTORE_PANES_ON_POPUP === "1" && process.env.FAKE_HERDR_MISSING_PANES_FILE) {
+    writeFileSync(process.env.FAKE_HERDR_MISSING_PANES_FILE, "");
+  }
   const decision = process.env.FAKE_POPUP_DECISION;
   const envArg = argv.find((item) => item.startsWith("HERDR_SBX_CONFIRMATION_ID="));
   const stateDir = process.env.HERDR_PLUGIN_STATE_DIR;

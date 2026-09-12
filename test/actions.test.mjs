@@ -1067,3 +1067,55 @@ test("fetch-changes keeps its result when the bundle cleanup inside the sandbox 
   assert.match(stderr, /could not remove .*\.bundle inside the sandbox: .*did not finish within/);
   f.cleanup();
 });
+
+test("actions refuse to touch a mapping whose bridge process is still alive, even before Herdr sees an agent", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "creating", bridgePid: process.pid, bridgeStartedAt: "2026-09-12T20:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", bridgePid: 2147483647, bridgeStartedAt: "2026-09-12T20:00:00.000Z" }),
+  }) });
+  for (const action of ["reconnect", "forget-mapping", "replace-sandbox"]) {
+    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed" } });
+    assert.equal(result.ok, false, action);
+    assert.equal(result.errorKind, "conflict", action);
+    assert.match(result.message, new RegExp(`still runs the bridge for ${NAME} \\(pid ${process.pid}`), action);
+  }
+  assert.deepEqual(f.confirmations(), [], "no popup was opened for a busy mapping");
+  assert.ok(f.sbxSandboxes().some((item) => item.name === NAME), "nothing was deleted");
+  const dead = runAction(f, "reconnect", { context: { focused_pane_id: "pane-2" } });
+  assert.equal(dead.result.ok, true, JSON.stringify(dead.result));
+  f.cleanup();
+});
+
+test("prune-mappings does not delete an orphan whose pane came back while the popup was open", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "wA:p1": mappingFor({ worktree: p.worktree }, { paneId: "wA:p1" }) }) });
+  const missingFile = path.join(f.root, "missing-panes.txt");
+  writeFileSync(missingFile, "wA:p1");
+  const { result } = runAction(f, "prune-mappings", { env: { FAKE_HERDR_MISSING_PANES_FILE: missingFile, FAKE_HERDR_RESTORE_PANES_ON_POPUP: "1", FAKE_POPUP_DECISION: "confirmed" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.orphansConfirmed, true);
+  assert.deepEqual(result.deleted, []);
+  assert.ok(result.kept.some((item) => item.paneId === "wA:p1" && /pane came back while the confirmation was open/.test(item.reason)), JSON.stringify(result.kept));
+  assert.deepEqual(f.sbxSandboxes().map((item) => item.name), [NAME]);
+  assert.deepEqual(Object.keys(f.mappings().panes), ["wA:p1"]);
+  f.cleanup();
+});
+
+test("prune-mappings keeps a mapping that was rewritten while it was listing sandboxes", () => {
+  const f = createFixture({ panes: (p) => ({ "wA:p1": mappingFor({ worktree: p.worktree }, { paneId: "wA:p1" }) }) });
+  const { result } = runAction(f, "prune-mappings", { env: { FAKE_HERDR_MISSING_PANES: "wA:p1", FAKE_SBX_LS_TOUCH_PANE: "wA:p1" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.pruned, []);
+  assert.ok(result.kept.some((item) => item.paneId === "wA:p1" && /mapping changed while pruning/.test(item.reason)), JSON.stringify(result.kept));
+  assert.equal(f.mappings().panes["wA:p1"].sandboxName, `${NAME}-new`, "the newer mapping survived");
+  f.cleanup();
+});
+
+test("replace-sandbox still starts the replacement when the pane cannot be relabelled", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const { result, stderr } = runAction(f, "replace-sandbox", { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_FAIL: "pane rename" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.deleted, [NAME]);
+  assert.match(stderr, /could not relabel pane pane-1/);
+  assert.ok(f.herdrCalls().some((call) => call[1] === "run"), "the bridge was started");
+  f.cleanup();
+});

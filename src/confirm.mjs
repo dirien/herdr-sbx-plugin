@@ -159,7 +159,8 @@ export async function requestDeletionConfirmation({ stateDir, herdr, pluginId, d
       }
       await sleep(pollMs);
     }
-    return false;
+    // An answer written during the last sleep still counts; the popup already told the user it did.
+    return readConfirmationDecision(stateDir, requestId)?.decision === "confirmed";
   } finally {
     try {
       cleanupConfirmation(stateDir, requestId);
