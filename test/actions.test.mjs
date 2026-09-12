@@ -1007,3 +1007,18 @@ test("fetch-changes does not promote a mapping that never finished preparing", (
   f.cleanup();
   stale.cleanup();
 });
+
+test("fetch-changes keeps its result when the bundle cleanup inside the sandbox hangs", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "stopped" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
+  git(f.worktree, ["checkout", "-q", "-b", "agent-work"]);
+  writeFileSync(path.join(f.worktree, "note.txt"), "note\n");
+  git(f.worktree, ["add", "note.txt"]);
+  git(f.worktree, ["commit", "-q", "-m", "agent work"]);
+  git(f.worktree, ["checkout", "-q", "-"]);
+  const { result, stderr } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { FAKE_SBX_EXEC_RUN: "1", FAKE_SBX_SLEEP_MS: "5000", FAKE_SBX_SLEEP_MATCH: "-- rm -f", HERDR_SBX_TIMEOUT_MS: "150" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.transport, "bundle");
+  assert.ok(result.branches.includes(`sandbox-${NAME}/agent-work`), result.branches.join(","));
+  assert.match(stderr, /could not remove .*\.bundle inside the sandbox: .*did not finish within/);
+  f.cleanup();
+});

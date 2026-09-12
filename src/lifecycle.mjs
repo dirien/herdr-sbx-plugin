@@ -485,9 +485,14 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
           log(`could not remove ${onHost}: ${errorMessageOf(error)}`);
         }
       }
-      const cleanup = sbx.run(buildExecArgs({ sandboxName: entry.sandboxName, argv: ["rm", "-f", inSandbox] }));
-      if (cleanup.status !== 0) {
-        log(`could not remove ${inSandbox} inside the sandbox: ${cleanup.output.trim()}`);
+      // Cleanup must never change the fetch outcome: a timeout or spawn failure here is logged only.
+      try {
+        const cleanup = sbx.run(buildExecArgs({ sandboxName: entry.sandboxName, argv: ["rm", "-f", inSandbox] }));
+        if (cleanup.status !== 0) {
+          log(`could not remove ${inSandbox} inside the sandbox: ${cleanup.output.trim()}`);
+        }
+      } catch (error) {
+        log(`could not remove ${inSandbox} inside the sandbox: ${errorMessageOf(error)}`);
       }
     }
   }

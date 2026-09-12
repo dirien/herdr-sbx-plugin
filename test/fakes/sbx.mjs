@@ -4,7 +4,8 @@
  * FAKE_SBX_LOG, keeps sandboxes in FAKE_SBX_STATE, and injects failures
  * listed in FAKE_SBX_FAIL (comma-separated `subcommand[:mode][@sandbox]`; a
  * rule with `@sandbox` only fires for that sandbox name). FAKE_SBX_SLEEP_MS
- * delays every invocation, which is how the timeout tests wedge the daemon.
+ * delays every invocation (or only those whose argv contains
+ * FAKE_SBX_SLEEP_MATCH), which is how the timeout tests wedge the daemon.
  */
 import { spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,7 +16,7 @@ const stateFile = process.env.FAKE_SBX_STATE;
 if (logFile) {
   appendFileSync(logFile, `${JSON.stringify({ argv, cwd: process.cwd(), herdrAgent: process.env.HERDR_AGENT ?? null })}\n`);
 }
-if (process.env.FAKE_SBX_SLEEP_MS) {
+if (process.env.FAKE_SBX_SLEEP_MS && (!process.env.FAKE_SBX_SLEEP_MATCH || argv.join(" ").includes(process.env.FAKE_SBX_SLEEP_MATCH))) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_SBX_SLEEP_MS));
 }
 
