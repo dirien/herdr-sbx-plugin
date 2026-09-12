@@ -289,13 +289,13 @@ in this mode. Run `fetch-changes` to pull the agent's commits into the host
 repository as `sandbox-<name>/<branch>` refs, then merge or cherry-pick as
 usual. `sbx` registers a `sandbox-<name>` git remote only while `sbx run` is
 attached and stops a sandbox once its last session ends, so `fetch-changes`
-uses that remote only while the sandbox is running. Otherwise, and whenever
-the remote is absent, it carries the branches over in a git bundle through
-`sbx exec` and `sbx cp`, which also starts a stopped sandbox (`transport` in
-the result says which path was used). The fetched refs disappear with the sandbox, so keep work before
-`forget-mapping` or `replace-sandbox` with
-`git branch agent-work sandbox-<name>/agent-work`; `fetch-changes` prints that
-command for each branch.
+tries that remote only while the sandbox is running. Otherwise, when the
+remote is absent, or when it does not answer, it carries the branches over in
+a git bundle through `sbx exec` and `sbx cp`, which also starts a stopped
+sandbox (`transport` in the result says which path was used). The fetched
+refs disappear with the sandbox, so keep work before `forget-mapping` or
+`replace-sandbox` with `git branch agent-work sandbox-<name>/agent-work`;
+`fetch-changes` prints that command for each branch.
 
 ### Credentials and network
 

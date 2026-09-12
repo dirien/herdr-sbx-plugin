@@ -768,6 +768,17 @@ test("fetch-changes bundles instead of trusting a remote whose sandbox is stoppe
   f.cleanup();
 });
 
+test("fetch-changes falls back to a bundle when the registered remote of a running sandbox is dead", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
+  git(f.worktree, ["remote", "add", `sandbox-${NAME}`, path.join(f.root, "no-longer-served.git")]);
+  const { result, stderr } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { FAKE_SBX_EXEC_RUN: "1" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.transport, "bundle");
+  assert.match(stderr, /git fetch sandbox-.* failed \(exit \d+\)\. Fetching through a git bundle instead/);
+  assert.ok(result.branches.length > 0, result.branches.join(","));
+  f.cleanup();
+});
+
 test("fetch-changes kills a git fetch whose remote accepts the connection and then stays silent", async () => {
   const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
   // A listener that never answers: the kernel completes git's connection, the daemon never replies.
@@ -778,11 +789,11 @@ test("fetch-changes kills a git fetch whose remote accepts the connection and th
     const { port } = /** @type {import("node:net").AddressInfo} */ (server.address());
     git(f.worktree, ["remote", "add", `sandbox-${NAME}`, `git://127.0.0.1:${port}/repo.git`]);
     const started = Date.now();
-    const { result } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { HERDR_SBX_TIMEOUT_MS: "700" } });
-    assert.equal(result.ok, false, JSON.stringify(result));
-    assert.equal(result.errorKind, "network");
-    assert.match(result.message, /git fetch sandbox-.* did not finish within 1s and was killed/);
+    const { result, stderr } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" }, env: { HERDR_SBX_TIMEOUT_MS: "700", FAKE_SBX_EXEC_RUN: "1" } });
     assert.ok(Date.now() - started < 10_000, "the action came back promptly");
+    assert.match(stderr, /git fetch sandbox-.* did not finish within 1s and was killed.*Fetching through a git bundle instead/);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.transport, "bundle", "a silent daemon is not the end of the fetch");
   } finally {
     await new Promise((resolve) => server.close(() => resolve(undefined)));
     f.cleanup();

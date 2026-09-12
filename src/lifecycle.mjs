@@ -20,7 +20,7 @@ import { shellQuote } from "./shell.mjs";
 import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneEntry } from "./state.mjs";
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
-export const CONNECTABLE_STATES = new Set(["created", "prepared", "ready", "stopped"]);
+export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
 export const NO_SANDBOX_STATES = new Set(["provisional", "missing"]);
@@ -438,13 +438,28 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     let transport;
     if (hasRemote && wasRunning) {
       // The remote's git daemon lives inside the session that registered it, so
-      // it is only trusted while the sandbox is running on its own.
+      // it is only tried while the sandbox is running on its own, and a running
+      // sandbox is still no proof that the daemon is there: the session may have
+      // ended while the plugin's own exec kept the VM up. The bundle path does
+      // not depend on it, so any remote failure falls back to it.
       transport = "remote";
-      const fetch = runGit(["-C", entry.localPath, "fetch", "--verbose", remote], `git fetch ${remote}`);
-      output = fetch.output;
-      if (fetch.status !== 0) {
-        const kind = classifyGitFailure(output);
-        throw new PluginError(kind, `git fetch ${remote} failed (exit ${fetch.status}).`, { output });
+      let failure = null;
+      try {
+        const fetch = runGit(["-C", entry.localPath, "fetch", "--verbose", remote], `git fetch ${remote}`);
+        output = fetch.output;
+        if (fetch.status !== 0) {
+          failure = new PluginError(classifyGitFailure(output), `git fetch ${remote} failed (exit ${fetch.status}).`, { output });
+        }
+      } catch (error) {
+        if (errorKindOf(error) === "startup") {
+          throw error;
+        }
+        failure = error;
+      }
+      if (failure) {
+        log(`${errorMessageOf(failure)} Fetching through a git bundle instead.`);
+        transport = "bundle";
+        output = fetchViaBundle(entry, remote);
       }
     } else {
       // sbx registers the remote only while `sbx run` attaches and stops the
