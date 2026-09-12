@@ -1,0 +1,132 @@
+id = "sbx.sandbox"
+name = "Docker Sandboxes (sbx)"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Run one coding agent per Docker Sandbox microVM, driven by the sbx CLI."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["sh", "scripts/write-node-path.sh"]
+
+[[actions]]
+id = "doctor"
+title = "Check sbx installation"
+description = "Verify that the sbx CLI is installed and the local sandbox daemon answers. Creates nothing."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "install-keybindings"
+title = "Install key bindings"
+description = "Add the plugin's key bindings to the Herdr config (start-agent, reconnect, open-shell, sandboxes) and reload it. Skips bindings that already exist."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "start-agent"
+title = "Start configured agent in a new Docker Sandbox"
+description = "Create a Docker Sandbox with the current worktree mounted, split a pane, and launch the configured agent inside it."
+contexts = ["workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "reconnect"
+title = "Reconnect agent to this sandbox"
+description = "Launch the mapped agent again inside the sandbox tied to the focused pane. sbx starts a stopped sandbox first."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "open-shell"
+title = "Open a shell in this sandbox"
+description = "Split a pane and open an interactive login shell inside the sandbox tied to the focused pane."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "fetch-changes"
+title = "Fetch sandbox commits (clone mode)"
+description = "Run git fetch against the sandbox git remote so commits made inside a clone-mode sandbox appear in the local repository."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "stop"
+title = "Stop this sandbox"
+description = "Stop the sandbox tied to the focused pane. Its filesystem is preserved and the next exec starts it again."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "info"
+title = "Show sandbox mapping"
+description = "Print the sandbox name, agent, workspace mode and paths mapped to the focused pane."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "list-sandboxes"
+title = "List plugin sandboxes"
+description = "List every pane-to-sandbox mapping this plugin tracks and flag sandboxes that no longer exist."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "prune-mappings"
+title = "Forget mappings whose pane and sandbox are gone"
+description = "Drop every mapping whose Herdr pane no longer exists and whose sandbox sbx no longer lists. Deletes nothing else."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "sandboxes"
+title = "Show the sandboxes overlay"
+description = "Open a live overlay listing every sandbox this plugin tracks, its status, its pane and its published ports."
+contexts = ["global", "workspace", "pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "open-port"
+title = "Open a published sandbox port"
+description = "Open http://localhost:<port> for a port published by the focused pane's sandbox, or for a Ctrl-clicked sbx://<sandbox>/<port> link."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "replace-sandbox"
+title = "Replace this sandbox"
+description = "Ask for confirmation in a popup, delete the sandbox tied to the focused pane, then create a fresh one and start the agent."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[actions]]
+id = "forget-mapping"
+title = "Delete sandbox and forget mapping"
+description = "Ask for confirmation in a popup, delete the sandbox tied to the focused pane, and drop its mapping."
+contexts = ["pane"]
+command = ["sh", "bin/run.sh", "src/action.mjs"]
+
+[[events]]
+on = "worktree.removed"
+command = ["sh", "bin/run.sh", "src/events.mjs"]
+# The hook opens the deletion-confirmation popup before it removes anything.
+
+[[panes]]
+id = "deletion-confirmation"
+title = "Confirm sandbox deletion"
+placement = "popup"
+width = "72%"
+height = "50%"
+command = ["sh", "bin/run.sh", "src/deletion-confirmation.mjs"]
+
+[[panes]]
+id = "sandboxes"
+title = "Docker Sandboxes"
+placement = "overlay"
+command = ["sh", "bin/run.sh", "src/sandboxes-pane.mjs"]
+
+[[link_handlers]]
+id = "sandbox-port"
+title = "Open sandbox port in the browser"
+pattern = "^sbx://[A-Za-z0-9][A-Za-z0-9.-]+/[0-9]+$"
+action = "open-port"

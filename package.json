@@ -1,0 +1,17 @@
+{
+  "name": "herdr-sbx-plugin",
+  "version": "0.1.0",
+  "description": "Herdr plugin that runs coding agents inside Docker Sandboxes through the sbx CLI.",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "syntax": "for f in src/*.mjs test/*.mjs test/fakes/*.mjs; do node --check \"$f\" || exit 1; done",
+    "check": "npm run syntax && npm test",
+    "lint:md": "markdownlint README.md CHANGELOG.md AGENTS.md docs/"
+  }
+}
