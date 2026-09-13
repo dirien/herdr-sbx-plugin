@@ -162,10 +162,13 @@ switch (subcommand) {
       if (index === -1) fail("not-found", name);
       state.sandboxes.splice(index, 1);
       process.stdout.write(`Removed ${name}\n`);
-      if (process.env.FAKE_SBX_RM_TOUCH_PANE && process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID && process.env.HERDR_PLUGIN_STATE_DIR) {
-        // Emulate a bridge that attached between two deletions of the same mapping.
+      if (process.env.FAKE_SBX_RM_TOUCH_PANE && process.env.HERDR_PLUGIN_STATE_DIR) {
+        // Emulate a bridge that attached, or a deletion that took over, between two rms of the same mapping.
         const touched = getPaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_RM_TOUCH_PANE);
-        if (touched) savePaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_RM_TOUCH_PANE, { ...touched, bridgePid: Number(process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID), bridgeStartedAt: new Date().toISOString() });
+        const patch = {};
+        if (process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID) Object.assign(patch, { bridgePid: Number(process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID), bridgeStartedAt: new Date().toISOString() });
+        if (process.env.FAKE_SBX_RM_TOUCH_DELETING_PID) Object.assign(patch, { deletingPid: Number(process.env.FAKE_SBX_RM_TOUCH_DELETING_PID), deletingSince: new Date().toISOString() });
+        if (touched && Object.keys(patch).length > 0) savePaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_RM_TOUCH_PANE, { ...touched, ...patch });
       }
     }
     saveState(state);

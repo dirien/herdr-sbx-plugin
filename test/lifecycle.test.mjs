@@ -252,3 +252,27 @@ test("destroy fails closed when Herdr cannot be asked, and looks again before ev
   bridge.stop();
   f.cleanup();
 });
+
+test("forget keeps the deletion claim until the mapping is removed, and yields to a takeover", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.deepEqual(lifecycle.destroy("pane-1", { keepClaim: true }), { deleted: [NAME], missing: [] });
+  const claimed = f.mappings().panes["pane-1"];
+  assert.equal(claimed.deletingPid, process.pid, "the claim outlives destroy when asked");
+  assert.equal(claimed.lifecycleState, "missing");
+  assert.deepEqual(lifecycle.forget("pane-1"), { deleted: [], missing: [] }, "nothing left to delete; the mapping goes");
+  assert.equal(f.mappings().panes["pane-1"], undefined);
+
+  const other = fakeActionProcess();
+  const stolen = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const stolenLifecycle = createLifecycle({ stateDir: stolen.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx: createSbxClient({ bin: FAKE_SBX, env: stolen.env({ FAKE_SBX_RM_TOUCH_PANE: "pane-1", FAKE_SBX_RM_TOUCH_DELETING_PID: String(other.pid) }) }), log: () => {} });
+  assert.throws(() => stolenLifecycle.forget("pane-1"), (error) => error.errorKind === "conflict" && /taken over by process/.test(error.message));
+  const left = stolen.mappings().panes["pane-1"];
+  assert.ok(left, "the mapping was left to the other process");
+  assert.equal(left.deletingPid, other.pid, "the other claim was not clobbered");
+  assert.deepEqual(left.deletedSandboxNames, [NAME], "what was deleted is still recorded");
+  other.stop();
+  f.cleanup();
+  stolen.cleanup();
+});

@@ -180,3 +180,23 @@ test("two contenders reclaiming the same stale lock never hold it at the same ti
   assert.ok(overlap <= 0, `the two hold intervals overlap by ${overlap}ms: ${JSON.stringify([a, b])}`);
   assert.ok(!existsSync(lock), "the lock is released at the end");
 });
+
+test("a stale lock is reclaimed even when a dead reclaimer left its guard behind", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  mkdirSync(path.dirname(lock), { recursive: true });
+  writeFileSync(lock, "2147483647\n");
+  writeFileSync(`${lock}.reclaim`, "2147483646\n");
+  assert.equal(withPaneLock(stateDir, "pane-1", () => "reclaimed"), "reclaimed");
+  assert.ok(!existsSync(lock));
+  assert.ok(!existsSync(`${lock}.reclaim`), "the abandoned guard is gone too");
+  writeFileSync(lock, `${process.pid}\n`);
+  writeFileSync(`${lock}.reclaim`, `${process.pid}\n`);
+  process.env.HERDR_SBX_LOCK_WAIT_MS = "150";
+  try {
+    assert.throws(() => withPaneLock(stateDir, "pane-1", () => "never"), (error) => error.errorKind === "conflict", "a live owner's lock is never reclaimed");
+  } finally {
+    delete process.env.HERDR_SBX_LOCK_WAIT_MS;
+  }
+  assert.ok(existsSync(lock));
+});

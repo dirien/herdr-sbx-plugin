@@ -428,10 +428,12 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * retry never re-deletes or forgets a name. When `expectedNames` is given
    * (the names a confirmation popup displayed), the mapping must still track
    * exactly those names, otherwise nothing is deleted.
+   * With `keepClaim` the mapping stays claimed by this process afterwards, for
+   * a caller that goes on to remove the mapping itself.
    * @param {string} paneId
-   * @param {{expectedNames?: string[]|null}} [options]
+   * @param {{expectedNames?: string[]|null, keepClaim?: boolean}} [options]
    */
-  function destroy(paneId, { expectedNames = null } = {}) {
+  function destroy(paneId, { expectedNames = null, keepClaim = false } = {}) {
     // The confirmation popup may have stayed open for a minute, long enough for
     // reconnect to attach an agent again. This is the one place every sbx rm
     // passes through, so the mapping is re-read and re-checked here under the
@@ -483,13 +485,27 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       // The mapping's own sandbox may already be gone even though a predecessor is not.
       const ownGone = deleted.includes(entry.sandboxName) || missing.includes(entry.sandboxName);
       try {
-        updatePaneEntry(stateDir, paneId, { ...(ownGone ? { lifecycleState: "missing" } : {}), deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: describeError(failure), deletingPid: null, deletingSince: null });
+        withPaneLock(stateDir, paneId, () => {
+          const now = requirePaneEntry(stateDir, paneId);
+          // What was deleted is recorded either way; the claim is released only if it is still ours.
+          const release = now.deletingPid === process.pid ? { deletingPid: null, deletingSince: null } : {};
+          updatePaneEntry(stateDir, paneId, { ...(ownGone ? { lifecycleState: "missing" } : {}), deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: describeError(failure), ...release });
+        });
       } catch (error) {
         log(`Could not record the failed deletion for pane ${paneId}: ${errorMessageOf(error)}`);
       }
       throw failure;
     }
-    updatePaneEntry(stateDir, paneId, { lifecycleState: "missing", deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: null, deletingPid: null, deletingSince: null });
+    withPaneLock(stateDir, paneId, () => {
+      const now = requirePaneEntry(stateDir, paneId);
+      const record = { lifecycleState: "missing", deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: null };
+      if (now.deletingPid !== process.pid) {
+        // Whoever owns the mapping now must still learn what is gone; only the claim is theirs.
+        updatePaneEntry(stateDir, paneId, record);
+        throw new PluginError("conflict", `The deletion of pane ${paneId}'s sandboxes was taken over by process ${now.deletingPid ?? "unknown"} after ${deleted.join(", ") || "nothing"} was deleted; the mapping was left to it.`);
+      }
+      updatePaneEntry(stateDir, paneId, { ...record, ...(keepClaim ? {} : { deletingPid: null, deletingSince: null }) });
+    });
     return { deleted, missing };
   }
 
@@ -543,8 +559,16 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {{expectedNames?: string[]|null}} [options] See {@link destroy}.
    */
   function forget(paneId, options = {}) {
-    const outcome = destroy(paneId, options);
-    deletePaneEntry(stateDir, paneId);
+    // The claim taken by destroy stays on the mapping until it is removed under
+    // the same lock, so no bridge can adopt the mapping in between.
+    const outcome = destroy(paneId, { ...options, keepClaim: true });
+    withPaneLock(stateDir, paneId, () => {
+      const now = getPaneEntry(stateDir, paneId);
+      if (now && now.deletingPid !== process.pid) {
+        throw new PluginError("conflict", `The mapping of pane ${paneId} was taken over by process ${now.deletingPid ?? "unknown"} after its sandboxes were deleted; the mapping was left to it.`);
+      }
+      deletePaneEntry(stateDir, paneId);
+    });
     return outcome;
   }
 

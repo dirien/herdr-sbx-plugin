@@ -164,23 +164,69 @@ function sleepSync(ms) {
 }
 
 /**
- * Takes a stale lock away with one atomic rename, so of several contenders
- * that saw the same dead owner only one removes it and none can remove the
- * fresh lock a faster contender created in the meantime.
+ * Removes a stale lock. Reclaimers are serialised by their own exclusive
+ * guard file, and the lock is inspected again under that guard: it is removed
+ * only while it still names the dead owner (or is still empty and old). A
+ * fresh lock a faster contender created in the meantime therefore survives,
+ * because a lock can only be replaced by a reclaimer, and reclaimers wait for
+ * each other.
  * @param {string} lock
+ * @param {number} deadOwner The pid seen in the lock, or NaN for an empty lock.
+ * @param {number} waitMs Age after which an empty lock counts as abandoned.
  */
-function reclaimStaleLock(lock) {
-  const parked = `${lock}.stale-${process.pid}-${randomBytes(4).toString("hex")}`;
+function reclaimStaleLock(lock, deadOwner, waitMs) {
+  const guard = `${lock}.reclaim`;
+  let fd = null;
   try {
-    renameSync(lock, parked);
-  } catch {
-    // Someone else reclaimed it first; the next attempt to create the lock decides.
+    fd = openSync(guard, "wx");
+  } catch (error) {
+    if (/** @type {any} */ (error).code === "EEXIST") {
+      breakAbandonedGuard(guard, waitMs);
+    }
     return;
   }
   try {
-    unlinkSync(parked);
+    writeFileSync(fd, `${process.pid}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    let stillStale = false;
+    try {
+      const owner = Number(readFileSync(lock, "utf8").trim());
+      stillStale = Number.isInteger(owner) && owner > 0
+        ? owner === deadOwner && !processAlive(owner)
+        : Number.isNaN(deadOwner) && Date.now() - statSync(lock).mtimeMs > waitMs;
+    } catch {
+      // The lock is gone already; nothing to reclaim.
+    }
+    if (stillStale) {
+      unlinkSync(lock);
+    }
+  } finally {
+    try {
+      unlinkSync(guard);
+    } catch {
+      // Nothing to do.
+    }
+  }
+}
+
+/**
+ * A reclaim guard left behind by a reclaimer that died is removed once its
+ * owner is gone or it is older than the lock wait.
+ * @param {string} guard
+ * @param {number} waitMs
+ */
+function breakAbandonedGuard(guard, waitMs) {
+  try {
+    const owner = Number(readFileSync(guard, "utf8").trim());
+    const abandoned = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : Date.now() - statSync(guard).mtimeMs > waitMs;
+    if (abandoned) {
+      unlinkSync(guard);
+    }
   } catch {
-    // Left behind under a unique name; harmless.
+    // Already gone.
   }
 }
 
@@ -254,7 +300,7 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
     }
     const stale = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : ageMs > waitMs;
     if (stale) {
-      reclaimStaleLock(lock);
+      reclaimStaleLock(lock, Number.isInteger(owner) && owner > 0 ? owner : NaN, waitMs);
       continue;
     }
     if (Date.now() >= deadline) {
