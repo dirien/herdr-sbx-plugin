@@ -200,6 +200,16 @@ export function fakeBridgeProcess(paneId) {
 }
 
 /**
+ * Starts a process whose command line looks like an open-shell bridge for
+ * `paneId` (it only sleeps). Call `stop()` when done.
+ * @param {string} paneId
+ * @returns {{pid: number, stop: () => void}}
+ */
+export function fakeShellProcess(paneId) {
+  return fakeProcess([path.join("src", "bridge.mjs"), "shell", "--pane-id", paneId]);
+}
+
+/**
  * Starts a process whose command line looks like a plugin action (it only
  * sleeps), for tests that need a live deletion owner. Call `stop()` when done.
  * @returns {{pid: number, stop: () => void}}

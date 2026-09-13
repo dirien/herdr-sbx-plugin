@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
 import { parseBridgeArgs } from "../src/bridge-main.mjs";
-import { FAKE_SBX, createFixture, fakeActionProcess, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
+import { FAKE_SBX, createFixture, fakeActionProcess, fakeShellProcess, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -208,7 +208,10 @@ test("shell opens a login shell without touching the agent's mapping", () => {
   const { status } = runBridge(f, "shell", "pane-1");
   assert.equal(status, 0);
   assert.deepEqual(f.sbxCalls()[0], ["exec", "--interactive", "--tty", "--workdir", f.worktree, NAME, "--", "zsh", "-l"]);
-  assert.deepEqual(f.mappings().panes["pane-1"], before);
+  const { shellPids, updatedAt, revision, ...after } = f.mappings().panes["pane-1"];
+  const { updatedAt: beforeUpdatedAt, revision: beforeRevision, ...beforeRest } = before;
+  assert.deepEqual(shellPids, [], "the shell registered itself for the duration and released again");
+  assert.deepEqual(after, beforeRest, "no lifecycle field changed");
   const gone = createFixture({ panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
   assert.equal(runBridge(gone, "shell", "pane-1").status, 1);
   assert.equal(gone.mappings().panes["pane-1"].lifecycleState, "ready");
@@ -282,5 +285,18 @@ test("the bridge does not attach while an action is deleting the mapping's sandb
   assert.match(stdout, /being deleted right now/);
   assert.ok(!f.sbxCalls().some((call) => call[0] === "exec"), "no attach happened");
   deleter.stop();
+  f.cleanup();
+});
+
+test("the shell bridge does not open into a deletion in progress", () => {
+  const deleter = fakeActionProcess();
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }) }) });
+  const { status, stdout } = runBridge(f, "shell", "pane-1");
+  assert.equal(status, 1);
+  assert.match(stdout, /not opening a shell/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "exec"));
+  deleter.stop();
+  const stale = fakeShellProcess("pane-1");
+  stale.stop();
   f.cleanup();
 });

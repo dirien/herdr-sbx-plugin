@@ -5,6 +5,7 @@
  * @module state
  */
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { LIFECYCLE_STATES, LOCK_WAIT_ENV, LOCK_WAIT_MS, PANES_DIR, STATE_VERSION } from "./constants.mjs";
@@ -125,12 +126,6 @@ export function updatePaneEntry(stateDir, paneId, patch) {
 }
 
 /**
- * Removes the entry for a pane if present.
- * @param {string} stateDir
- * @param {string} paneId
- * @returns {boolean} Whether an entry existed.
- */
-/**
  * Path of the lock file that serialises read-check-write sequences on a
  * pane's mapping (next to the mapping, so it lives and dies with the state dir).
  * @param {string} stateDir
@@ -159,6 +154,80 @@ function processAlive(pid) {
   }
 }
 
+/**
+ * A token that identifies one incarnation of a process: its start time as the
+ * kernel reports it (Linux: field 22 of /proc/PID/stat; elsewhere: ps lstart).
+ * A recycled pid carries a different token, so records that store a pid store
+ * this next to it. Null when the platform cannot say.
+ * @param {number} pid
+ * @returns {string|null}
+ */
+export function processStartToken(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    // rest[0] is field 3 (state); the start time is field 22.
+    const startTime = rest[19];
+    if (startTime && /^\d+$/.test(startTime)) {
+      return `linux:${startTime}`;
+    }
+  } catch {
+    // Not Linux, or the process is gone: try ps.
+  }
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 5000 });
+  if (result.error || result.status !== 0) {
+    return null;
+  }
+  const started = (result.stdout ?? "").trim().replace(/\s+/g, " ");
+  return started === "" ? null : `ps:${started}`;
+}
+
+/** After this long a lock whose owner is alive but cannot be identified is treated as abandoned; sections are held for milliseconds. */
+const LOCK_UNVERIFIED_MAX_MS = 60_000;
+
+/**
+ * Reads a lock file: the owner's pid and start token plus the file's age.
+ * @param {string} lock
+ * @returns {{text: string, pid: number, token: string|null, ageMs: number}|null} Null when the file is gone or unreadable right now.
+ */
+function readLockOwner(lock) {
+  try {
+    const text = readFileSync(lock, "utf8").trim();
+    const [pid, token = null] = text.split(/\s+/);
+    return { text, pid: Number(pid), token, ageMs: Date.now() - statSync(lock).mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a lock owner is gone: its pid is dead, its pid now belongs to a
+ * different incarnation (start token mismatch), or it cannot be identified and
+ * the lock is far older than any section is ever held. An empty or garbled
+ * lock counts once it is older than the wait.
+ * @param {{pid: number, token: string|null, ageMs: number}|null} owner
+ * @param {number} waitMs
+ * @returns {boolean}
+ */
+function lockOwnerGone(owner, waitMs) {
+  if (!owner) {
+    return false;
+  }
+  if (!(Number.isInteger(owner.pid) && owner.pid > 0)) {
+    return owner.ageMs > waitMs;
+  }
+  if (!processAlive(owner.pid)) {
+    return true;
+  }
+  if (owner.token && owner.token !== "-") {
+    const current = processStartToken(owner.pid);
+    if (current !== null) {
+      return current !== owner.token;
+    }
+  }
+  return owner.ageMs > Math.max(waitMs, LOCK_UNVERIFIED_MAX_MS);
+}
+
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -174,7 +243,7 @@ function sleepSync(ms) {
  * @param {number} deadOwner The pid seen in the lock, or NaN for an empty lock.
  * @param {number} waitMs Age after which an empty lock counts as abandoned.
  */
-function reclaimStaleLock(lock, deadOwner, waitMs) {
+function reclaimStaleLock(lock, seenText, waitMs) {
   const guard = `${lock}.reclaim`;
   let fd = null;
   try {
@@ -191,16 +260,9 @@ function reclaimStaleLock(lock, deadOwner, waitMs) {
     closeSync(fd);
   }
   try {
-    let stillStale = false;
-    try {
-      const owner = Number(readFileSync(lock, "utf8").trim());
-      stillStale = Number.isInteger(owner) && owner > 0
-        ? owner === deadOwner && !processAlive(owner)
-        : Number.isNaN(deadOwner) && Date.now() - statSync(lock).mtimeMs > waitMs;
-    } catch {
-      // The lock is gone already; nothing to reclaim.
-    }
-    if (stillStale) {
+    // Only the very lock that was inspected, still with its dead owner, is removed.
+    const owner = readLockOwner(lock);
+    if (owner && owner.text === seenText && lockOwnerGone(owner, waitMs)) {
       unlinkSync(lock);
     }
   } finally {
@@ -213,16 +275,17 @@ function reclaimStaleLock(lock, deadOwner, waitMs) {
 }
 
 /**
- * A reclaim guard left behind by a reclaimer that died is removed once its
- * owner is gone or it is older than the lock wait.
+ * A reclaim guard is held for microseconds. One whose owner is dead, or one
+ * older than the lock wait (its pid may have been recycled), was left behind
+ * by a reclaimer that died and is removed.
  * @param {string} guard
  * @param {number} waitMs
  */
 function breakAbandonedGuard(guard, waitMs) {
   try {
     const owner = Number(readFileSync(guard, "utf8").trim());
-    const abandoned = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : Date.now() - statSync(guard).mtimeMs > waitMs;
-    if (abandoned) {
+    const ownerDead = Number.isInteger(owner) && owner > 0 && !processAlive(owner);
+    if (ownerDead || Date.now() - statSync(guard).mtimeMs > waitMs) {
       unlinkSync(guard);
     }
   } catch {
@@ -237,7 +300,7 @@ function breakAbandonedGuard(guard, waitMs) {
  */
 function releaseLock(lock) {
   try {
-    if (readFileSync(lock, "utf8").trim() !== String(process.pid)) {
+    if (readLockOwner(lock)?.pid !== process.pid) {
       return;
     }
     unlinkSync(lock);
@@ -278,7 +341,7 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
     }
     if (fd !== null) {
       try {
-        writeFileSync(fd, `${process.pid}\n`);
+        writeFileSync(fd, `${process.pid} ${processStartToken(process.pid) ?? "-"}\n`);
       } finally {
         closeSync(fd);
       }
@@ -290,21 +353,14 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
         releaseLock(lock);
       }
     }
-    let owner = NaN;
-    let ageMs = 0;
-    try {
-      owner = Number(readFileSync(lock, "utf8").trim());
-      ageMs = Date.now() - statSync(lock).mtimeMs;
-    } catch {
-      // Being written or removed right now; look again.
-    }
-    const stale = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : ageMs > waitMs;
-    if (stale) {
-      reclaimStaleLock(lock, Number.isInteger(owner) && owner > 0 ? owner : NaN, waitMs);
-      continue;
+    const owner = readLockOwner(lock);
+    if (lockOwnerGone(owner, waitMs)) {
+      reclaimStaleLock(lock, owner.text, waitMs);
+      // No early retry: the deadline and the pause below also bound a reclaim
+      // that makes no progress, so a waiter can never spin or hang here.
     }
     if (Date.now() >= deadline) {
-      throw new PluginError("conflict", `The mapping of pane ${paneId} is locked by process ${Number.isInteger(owner) && owner > 0 ? owner : "unknown"}; try again in a moment.`);
+      throw new PluginError("conflict", `The mapping of pane ${paneId} is locked by process ${owner && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : "unknown"}; try again in a moment.`);
     }
     sleepSync(20);
   }
@@ -330,6 +386,12 @@ export function deletePaneEntryIfUnchanged(stateDir, paneId, seen) {
   });
 }
 
+/**
+ * Removes the entry for a pane if present, under the mapping lock.
+ * @param {string} stateDir
+ * @param {string} paneId
+ * @returns {boolean} Whether an entry existed.
+ */
 export function deletePaneEntry(stateDir, paneId) {
   const file = paneEntryPath(stateDir, paneId);
   return withPaneLock(stateDir, paneId, () => {

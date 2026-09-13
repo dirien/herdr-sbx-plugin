@@ -15,14 +15,14 @@ import { BRIDGE_START_TIMEOUT_ENV, BRIDGE_START_TIMEOUT_MS, CONFIRMATION_TIMEOUT
 import { isInside, readContext, readPluginEnv, requirePluginDirs, resolveMountRoot, resolvePaneId, resolveWorkdir } from "./context.mjs";
 import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { createHerdrClient } from "./herdr.mjs";
-import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, bridgeIsRunning, createLifecycle, deletionInProgress, deletionTargets } from "./lifecycle.mjs";
+import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, bridgeIsRunning, createLifecycle, deletionInProgress, deletionTargets, liveShells, shellIsRunning } from "./lifecycle.mjs";
 import { hyperlink, parseSandboxPortUrl, sandboxPortUrl } from "./links.mjs";
 import { sandboxNameFor } from "./naming.mjs";
 import { openUrl } from "./open.mjs";
 import { emitResult, failurePayload } from "./result.mjs";
 import { createSbxClient } from "./sbx.mjs";
 import { buildPaneCommand, shellQuote } from "./shell.mjs";
-import { deletePaneEntry, deletePaneEntryIfUnchanged, getPaneEntry, loadState, savePaneEntry, withPaneLock } from "./state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, getPaneEntry, loadState, paneLockPath, savePaneEntry, withPaneLock } from "./state.mjs";
 
 /**
  * Builds the command typed into a pane to run the bridge.
@@ -95,7 +95,7 @@ function requireFocusedMapping(deps) {
   throw new PluginError("target", focused ? `No sandbox is mapped to pane ${focused} or to another pane in this workspace. Run start-agent first.` : "No focused pane was provided, so there is no sandbox mapping to act on.");
 }
 
-function refuseWhileAgentRuns(deps, target, verb) {
+function refuseWhileAgentRuns(deps, target, verb, { shellsBlock = true } = {}) {
   // Process ownership is checked for every target, orphan or not: a pane Herdr
   // no longer knows proves nothing about the bridge process or a running deletion.
   // A live bridge means the sandbox is being prepared or the agent is attached,
@@ -105,6 +105,12 @@ function refuseWhileAgentRuns(deps, target, verb) {
   }
   if (deletionInProgress(target.entry)) {
     throw new PluginError("conflict", `The sandboxes of pane ${target.paneId} are being deleted right now (pid ${target.entry.deletingPid}, since ${target.entry.deletingSince}). Wait for that to finish before you ${verb}.`);
+  }
+  if (shellsBlock) {
+    const shells = liveShells(target.entry);
+    if (shells.length > 0) {
+      throw new PluginError("conflict", `Pane ${target.paneId} has ${shells.length === 1 ? "an open-shell session" : `${shells.length} open-shell sessions`} in ${target.entry.sandboxName} (pid ${shells.map((shell) => shell.pid).join(", ")}). Close ${shells.length === 1 ? "it" : "them"} before you ${verb}.`);
+    }
   }
   if (target.orphan) {
     // Only Herdr's own record of the pane is unavailable for an orphan.
@@ -298,10 +304,13 @@ function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
   }
   let moved;
   try {
-    // The move is decided and written under the old pane's lock: a bridge
-    // acknowledging itself or a deletion claiming the mapping waits for it, and
-    // whatever happened before is visible in the re-read entry.
-    moved = withPaneLock(stateDir, oldPaneId, () => {
+    // The move is decided and written under both panes' locks, taken in a fixed
+    // order so two mirrored moves cannot wait for each other: a bridge
+    // acknowledging itself or a deletion claiming either mapping waits for the
+    // locks, and whatever happened before is visible in the re-read entries.
+    const ordered = [...new Set([oldPaneId, paneId])].sort((a, b) => (paneLockPath(stateDir, a) < paneLockPath(stateDir, b) ? -1 : 1));
+    const locked = (fn) => ordered.reduceRight((inner, id) => () => withPaneLock(stateDir, id, inner), fn)();
+    moved = locked(() => {
       const latest = getPaneEntry(stateDir, oldPaneId);
       if (!latest) {
         throw new PluginError("conflict", `The mapping of pane ${oldPaneId} disappeared while a new pane was being opened for it; nothing was moved.`);
@@ -319,16 +328,18 @@ function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
         savePaneEntry(stateDir, paneId, next);
         return next;
       }
-      // Herdr may hand out an id that another mapping still uses; keep that mapping's sandboxes deletable.
-      withPaneLock(stateDir, paneId, () => {
-        const displaced = getPaneEntry(stateDir, paneId);
-        if (displaced) {
-          next.replacesSandboxNames = [...new Set([...(next.replacesSandboxNames ?? []), ...trackedNames(displaced)])];
-          next.deletedSandboxNames = [...new Set([...(next.deletedSandboxNames ?? []), ...(displaced.deletedSandboxNames ?? [])])];
-          process.stderr.write(`pane ${paneId} was mapped to ${displaced.sandboxName}; it stays deletable through the adopted mapping\n`);
+      // Herdr may hand out an id that another mapping still uses; keep that mapping's
+      // sandboxes deletable, unless it is still in use, in which case nothing moves.
+      const displaced = getPaneEntry(stateDir, paneId);
+      if (displaced) {
+        if (bridgeIsRunning(displaced) || shellIsRunning(displaced) || deletionInProgress(displaced)) {
+          throw new PluginError("conflict", `Herdr handed out pane ${paneId}, but its mapping to ${displaced.sandboxName} is still in use (bridge ${displaced.bridgePid ?? "none"}, deletion ${displaced.deletingPid ?? "none"}); nothing was moved.`);
         }
-        savePaneEntry(stateDir, paneId, next);
-      });
+        next.replacesSandboxNames = [...new Set([...(next.replacesSandboxNames ?? []), ...trackedNames(displaced)])];
+        next.deletedSandboxNames = [...new Set([...(next.deletedSandboxNames ?? []), ...(displaced.deletedSandboxNames ?? [])])];
+        process.stderr.write(`pane ${paneId} was mapped to ${displaced.sandboxName}; it stays deletable through the adopted mapping\n`);
+      }
+      savePaneEntry(stateDir, paneId, next);
       deletePaneEntry(stateDir, oldPaneId);
       return next;
     });
@@ -472,14 +483,20 @@ const ACTIONS = {
     const sandboxName = sandboxNameFor({ prefix: deps.config.sandboxNamePrefix, agentKind: agent.kind, localPath, paneId: sourcePaneId });
     const paneId = openAgentPane(deps, { anchorPaneId: sourcePaneId, cwd: workdir, label: paneLabel(agent.kind, sandboxName) });
     const entry = freshEntry({ sandboxName, agent, localPath, workdir, config: deps.config, sourcePaneId, workspaceId: workspaceOf(deps) });
-    const stale = getPaneEntry(deps.pluginEnv.stateDir, paneId);
-    if (stale) {
-      // Herdr reused a pane id. Keep the old sandbox deletable through this mapping.
-      entry.replacesSandboxNames = trackedNames(stale);
-      entry.deletedSandboxNames = [...(stale.deletedSandboxNames ?? [])];
-      process.stderr.write(`pane ${paneId} was previously mapped to ${stale.sandboxName}; it stays deletable through the new mapping\n`);
-    }
-    savePaneEntry(deps.pluginEnv.stateDir, paneId, entry);
+    withPaneLock(deps.pluginEnv.stateDir, paneId, () => {
+      const stale = getPaneEntry(deps.pluginEnv.stateDir, paneId);
+      if (stale) {
+        // Herdr reused a pane id. A mapping that still has a bridge, a shell or a
+        // deletion attached is not stale at all; otherwise keep its sandboxes deletable.
+        if (bridgeIsRunning(stale) || shellIsRunning(stale) || deletionInProgress(stale)) {
+          throw new PluginError("conflict", `Herdr handed out pane ${paneId}, but its mapping to ${stale.sandboxName} is still in use (bridge ${stale.bridgePid ?? "none"}, deletion ${stale.deletingPid ?? "none"}). Try again in a moment.`);
+        }
+        entry.replacesSandboxNames = trackedNames(stale);
+        entry.deletedSandboxNames = [...(stale.deletedSandboxNames ?? [])];
+        process.stderr.write(`pane ${paneId} was previously mapped to ${stale.sandboxName}; it stays deletable through the new mapping\n`);
+      }
+      savePaneEntry(deps.pluginEnv.stateDir, paneId, entry);
+    });
     deps.herdr.runInPane(paneId, bridgeCommand({ pluginEnv: deps.pluginEnv, mode: "start", paneId, detectionKind: agent.herdrDetectionKind, sbxBin: deps.sbx.bin }));
     deps.herdr.notify("Docker Sandbox starting", `${agent.title} in ${sandboxName}`);
     return { payload: { paneId, sourcePaneId, sandboxName, agentKind: agent.kind, localPath, workdir, workspaceMode: deps.config.workspaceMode, openIn: deps.config.openIn, previousSandboxNames: entry.replacesSandboxNames } };
@@ -488,7 +505,8 @@ const ACTIONS = {
   async reconnect(deps) {
     const target = requireFocusedMapping(deps);
     const { entry } = target;
-    refuseWhileAgentRuns(deps, target, "reconnect");
+    // An open shell does not stop the agent from coming back; it only blocks deletions.
+    refuseWhileAgentRuns(deps, target, "reconnect", { shellsBlock: false });
     const agent = agentForEntry(deps.config, entry);
     const label = paneLabel(agent.kind, entry.sandboxName);
     const paneId = target.orphan ? rehomeOrphan(deps, target, label) : target.paneId;

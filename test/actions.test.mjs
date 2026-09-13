@@ -7,7 +7,7 @@ import { parseResultLine } from "../src/result.mjs";
 import { bridgeStartTimeout, entryCwd, keepBranchCommand } from "../src/action-main.mjs";
 import path from "node:path";
 import { test } from "node:test";
-import { FAKE_HERDR, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, git, mappingFor, runAction } from "./helpers.mjs";
+import { FAKE_HERDR, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, fakeShellProcess, git, mappingFor, runAction } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -1222,4 +1222,29 @@ test("replace-sandbox keeps its claim until the replacement is written and stops
   other.stop();
   f.cleanup();
   stolen.cleanup();
+});
+
+test("an open shell blocks forget-mapping and replace-sandbox but not reconnect, and a busy displaced mapping stops start-agent", () => {
+  const shell = fakeShellProcess("pane-1");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "stopped", shellPids: [{ pid: shell.pid, since: "2026-09-13T00:00:00.000Z" }] }) }) });
+  for (const action of ["forget-mapping", "replace-sandbox"]) {
+    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed" } });
+    assert.equal(result.errorKind, "conflict", action);
+    assert.match(result.message, /an open-shell session/, action);
+  }
+  assert.deepEqual(f.confirmations(), [], "refused before any popup");
+  const back = runAction(f, "reconnect", { context: { focused_pane_id: "pane-1" } });
+  assert.equal(back.result.ok, true, JSON.stringify(back.result));
+  shell.stop();
+
+  const bridge = fakeBridgeProcess("pane-new-1");
+  const reused = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-new-1": mappingFor({ worktree: p.worktree }, { paneId: "pane-new-1", bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }) }) });
+  const started = runAction(reused, "start-agent", { context: { focused_pane_id: "wA:p1", workspace_id: "wA", workspace_cwd: reused.worktree } });
+  assert.equal(started.result.errorKind, "conflict", JSON.stringify(started.result));
+  assert.match(started.result.message, /still in use/);
+  assert.equal(reused.mappings().panes["pane-new-1"].sandboxName, NAME, "the live mapping was not overwritten");
+  assert.ok(!reused.herdrCalls().some((call) => call[1] === "run"), "no bridge was started into the busy pane");
+  bridge.stop();
+  f.cleanup();
+  reused.cleanup();
 });

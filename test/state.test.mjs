@@ -200,3 +200,23 @@ test("a stale lock is reclaimed even when a dead reclaimer left its guard behind
   }
   assert.ok(existsSync(lock));
 });
+
+test("a lock whose pid was recycled is reclaimed, and a live reclaim guard never makes a waiter hang", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  mkdirSync(path.dirname(lock), { recursive: true });
+  writeFileSync(lock, `${process.pid} linux:0\n`);
+  assert.equal(withPaneLock(stateDir, "pane-1", () => "reclaimed"), "reclaimed", "a live pid with a different start token is a different process");
+  assert.ok(!existsSync(lock));
+  writeFileSync(lock, "2147483647 -\n");
+  writeFileSync(`${lock}.reclaim`, `${process.pid}\n`);
+  const started = Date.now();
+  let outcome;
+  try {
+    outcome = withPaneLock(stateDir, "pane-1", () => "acquired", { waitMs: 300 });
+  } catch (error) {
+    outcome = error.errorKind;
+  }
+  assert.ok(Date.now() - started < 5000, "the waiter returns, it does not spin forever");
+  assert.ok(outcome === "acquired" || outcome === "conflict", `the wait ends one way or the other, got ${outcome}`);
+});

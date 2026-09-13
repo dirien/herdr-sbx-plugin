@@ -5,9 +5,9 @@ import { test } from "node:test";
 import { CONFIG_DEFAULTS } from "../src/config.mjs";
 import { bridgeIsRunning, createLifecycle, deletionTargets, processCommandLine } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
-import { deletePaneEntry } from "../src/state.mjs";
+import { deletePaneEntry, processStartToken } from "../src/state.mjs";
 import { PluginError } from "../src/errors.mjs";
-import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, mappingFor } from "./helpers.mjs";
+import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, fakeShellProcess, mappingFor } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -275,4 +275,46 @@ test("forget keeps the deletion claim until the mapping is removed, and yields t
   other.stop();
   f.cleanup();
   stolen.cleanup();
+});
+
+test("an open-shell session blocks deletion, a shell refuses to open during one, and a duplicate mapping's bridge counts too", () => {
+  const shell = fakeShellProcess("pane-1");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { shellPids: [{ pid: shell.pid, since: "2026-09-13T00:00:00.000Z" }, { pid: 2147483647, since: "2026-09-13T00:00:00.000Z" }] }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.destroy("pane-1"), (error) => error.errorKind === "conflict" && /an open-shell session in herdr-claude-code-abc123def456 \(pid \d+\)/.test(error.message));
+  assert.deepEqual(f.sbxCalls(), []);
+  shell.stop();
+
+  const deleter = fakeActionProcess();
+  const deleting = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }) }) });
+  const deletingLifecycle = createLifecycle({ stateDir: deleting.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx: createSbxClient({ bin: FAKE_SBX, env: deleting.env() }), log: () => {} });
+  assert.throws(() => deletingLifecycle.shell("pane-1"), (error) => error.errorKind === "conflict" && /not opening a shell/.test(error.message));
+  assert.ok(!deleting.sbxCalls().some((call) => call[0] === "exec"));
+  deleter.stop();
+
+  const bridge = fakeBridgeProcess("pane-9");
+  const duplicated = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }),
+    "pane-9": mappingFor({ worktree: p.worktree }, { paneId: "pane-9", bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+  }) });
+  const dupLifecycle = createLifecycle({ stateDir: duplicated.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx: createSbxClient({ bin: FAKE_SBX, env: duplicated.env() }), log: () => {} });
+  assert.throws(() => dupLifecycle.destroy("pane-1"), (error) => error.errorKind === "conflict" && /Pane pane-9 also tracks herdr-claude-code-abc123def456 and still has a bridge or shell attached/.test(error.message));
+  assert.deepEqual(duplicated.sbxCalls(), []);
+  bridge.stop();
+  f.cleanup();
+  deleting.cleanup();
+  duplicated.cleanup();
+});
+
+test("ownership records survive a recycled pid check: a different incarnation of the same pid is not the owner", () => {
+  const bridge = fakeBridgeProcess("pane-1");
+  assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, bridgeToken: "linux:0", paneId: "pane-1" }), false, "a start token that does not match means the pid was recycled");
+  const token = processStartToken(bridge.pid);
+  assert.ok(token, "the platform reports a start token");
+  assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, bridgeToken: token, paneId: "pane-1" }), true);
+  assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, bridgeToken: null, paneId: "pane-1" }), true, "records without a token fall back to the command line check");
+  bridge.stop();
 });

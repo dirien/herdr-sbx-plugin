@@ -17,7 +17,7 @@ import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { sandboxGitRemote } from "./naming.mjs";
 import { buildCreateArgs, buildExecArgs, classifyFailure, createSbxClient } from "./sbx.mjs";
 import { shellQuote } from "./shell.mjs";
-import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneEntry, withPaneLock } from "./state.mjs";
+import { deletePaneEntry, getPaneEntry, loadState, processStartToken, requirePaneEntry, updatePaneEntry, withPaneLock } from "./state.mjs";
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
@@ -53,25 +53,68 @@ export function processCommandLine(pid) {
  * @returns {boolean}
  */
 export function bridgeIsRunning(entry) {
-  const pid = Number(entry?.bridgePid);
+  return processOwns({ pid: entry?.bridgePid, token: entry?.bridgeToken ?? null }, ["bridge.mjs"], entry?.paneId);
+}
+
+/**
+ * Whether a recorded process is alive, is the same incarnation that was
+ * recorded (start token), and runs one of the given scripts for the pane.
+ * @param {{pid: unknown, token: string|null}} record
+ * @param {string[]} scripts Script basenames one of which the command line must end a word with.
+ * @param {string|null} paneId When given, the command line must carry `--pane-id <paneId>`.
+ * @returns {boolean}
+ */
+function processOwns(record, scripts, paneId = null) {
+  const pid = Number(record?.pid);
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
   }
   try {
     process.kill(pid, 0);
   } catch {
-    // ESRCH: gone. EPERM: another user's process, which a bridge of ours never is.
+    // ESRCH: gone. EPERM: another user's process, which a process of ours never is.
     return false;
+  }
+  if (record.token && record.token !== "-") {
+    const current = processStartToken(pid);
+    if (current !== null && current !== record.token) {
+      // The pid was recycled since the record was written.
+      return false;
+    }
   }
   const commandLine = processCommandLine(pid);
   if (commandLine === null) {
-    // Alive but uninspectable: err on the side of treating the sandbox as busy.
+    // Alive but uninspectable: err on the side of treating the mapping as busy.
     return true;
   }
   const words = commandLine.split(/\s+/);
-  const runsBridge = words.some((word) => word.endsWith("bridge.mjs"));
+  if (!words.some((word) => scripts.some((script) => word.endsWith(script)))) {
+    return false;
+  }
+  if (paneId === null) {
+    return true;
+  }
   const paneIndex = words.indexOf("--pane-id");
-  return runsBridge && paneIndex !== -1 && words[paneIndex + 1] === String(entry.paneId ?? "");
+  return paneIndex !== -1 && words[paneIndex + 1] === String(paneId);
+}
+
+/**
+ * The open-shell sessions of a mapping that are still alive: entries of
+ * `shellPids` whose process runs `bridge.mjs shell` for the pane.
+ * @param {{shellPids?: Array<{pid: number, token?: string|null, since?: string}>, paneId?: string}} entry
+ * @returns {Array<{pid: number, token?: string|null, since?: string}>}
+ */
+export function liveShells(entry) {
+  return (entry?.shellPids ?? []).filter((shell) => processOwns({ pid: shell.pid, token: shell.token ?? null }, ["bridge.mjs"], entry?.paneId) && (processCommandLine(shell.pid) ?? "shell").includes(" shell "));
+}
+
+/**
+ * Whether an open-shell session is attached to the mapping's sandbox.
+ * @param {{shellPids?: Array<{pid: number, token?: string|null, since?: string}>, paneId?: string}} entry
+ * @returns {boolean}
+ */
+export function shellIsRunning(entry) {
+  return liveShells(entry).length > 0;
 }
 
 /**
@@ -82,20 +125,7 @@ export function bridgeIsRunning(entry) {
  * @returns {boolean}
  */
 export function deletionInProgress(entry) {
-  const pid = Number(entry?.deletingPid);
-  if (!Number.isInteger(pid) || pid <= 0) {
-    return false;
-  }
-  try {
-    process.kill(pid, 0);
-  } catch {
-    return false;
-  }
-  const commandLine = processCommandLine(pid);
-  if (commandLine === null) {
-    return true;
-  }
-  return commandLine.split(/\s+/).some((word) => word.endsWith("action.mjs") || word.endsWith("events.mjs"));
+  return processOwns({ pid: entry?.deletingPid, token: entry?.deletingToken ?? null }, ["action.mjs", "events.mjs"]);
 }
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
@@ -227,7 +257,9 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     if (!reused) {
       // The mapping may have been forgotten while sbx create ran for minutes;
       // a sandbox nobody tracks must not be left behind.
-      const still = getPaneEntry(stateDir, paneId);
+      // Read under the lock; nobody else can be mid-write. The name is tracked by no
+      // mapping any more, which is why this rm may bypass destroy's checks.
+      const still = withPaneLock(stateDir, paneId, () => getPaneEntry(stateDir, paneId));
       if (!still || still.sandboxName !== entry.sandboxName) {
         log(`The mapping for pane ${paneId} disappeared while ${entry.sandboxName} was being created; deleting the sandbox again.`);
         try {
@@ -394,9 +426,52 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string} paneId
    */
   function shell(paneId) {
-    const outcome = runAttached(paneId, [config.shell, "-l"], { label: `a ${config.shell} login shell`, track: false });
+    // A shell is attached to the VM like the agent is: it registers itself so
+    // no deletion runs under it, and it never opens into a deletion in progress.
+    acknowledgeShell(paneId);
+    let outcome;
+    try {
+      outcome = runAttached(paneId, [config.shell, "-l"], { label: `a ${config.shell} login shell`, track: false });
+    } finally {
+      releaseShell(paneId);
+    }
     log(`Shell exited with code ${outcome.exitCode}.`);
     return outcome;
+  }
+
+  /**
+   * Records this process as an open-shell session of the mapping, under the
+   * mapping lock, refusing while a deletion claims it.
+   * @param {string} paneId
+   */
+  function acknowledgeShell(paneId) {
+    withPaneLock(stateDir, paneId, () => {
+      const entry = requirePaneEntry(stateDir, paneId);
+      if (deletionInProgress(entry)) {
+        throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not opening a shell.`);
+      }
+      const shells = liveShells(entry).filter((shell) => shell.pid !== process.pid);
+      shells.push({ pid: process.pid, token: processStartToken(process.pid), since: new Date().toISOString() });
+      updatePaneEntry(stateDir, paneId, { shellPids: shells });
+    });
+  }
+
+  /**
+   * Removes this process from the mapping's open-shell sessions.
+   * @param {string} paneId
+   */
+  function releaseShell(paneId) {
+    try {
+      withPaneLock(stateDir, paneId, () => {
+        const entry = getPaneEntry(stateDir, paneId);
+        if (!entry) {
+          return;
+        }
+        updatePaneEntry(stateDir, paneId, { shellPids: (entry.shellPids ?? []).filter((shell) => shell.pid !== process.pid) });
+      });
+    } catch (error) {
+      log(`Could not release the shell record for pane ${paneId}: ${errorMessageOf(error)}`);
+    }
   }
 
   /**
@@ -408,7 +483,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     try {
       sbx.runChecked(["stop", entry.sandboxName], "stopping the sandbox");
     } catch (error) {
-      updatePaneEntry(stateDir, paneId, { lifecycleState: errorKindOf(error) === "not-found" ? "missing" : entry.lifecycleState, lastError: describeError(error) });
+      updatePaneEntry(stateDir, paneId, { ...(errorKindOf(error) === "not-found" ? { lifecycleState: "missing" } : {}), lastError: describeError(error) });
       if (errorKindOf(error) === "conflict") {
         throw new PluginError("conflict", `sbx refused to stop ${entry.sandboxName} while a session is attached. Exit the agent and any open-shell pane for this sandbox, then try again.`, { output: error.output, cause: error });
       }
@@ -417,9 +492,13 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     // Stopping says nothing about readiness: a mapping that never finished
     // preparing (failed, provisional, creating) keeps that state and its error,
     // so the next reconnect runs prepare again instead of attaching blindly.
-    if (CONNECTABLE_STATES.has(entry.lifecycleState)) {
-      updatePaneEntry(stateDir, paneId, { lifecycleState: "stopped", lastError: null });
-    }
+    // Decided on the mapping as it is now, not as it was before the slow stop.
+    withPaneLock(stateDir, paneId, () => {
+      const now = requirePaneEntry(stateDir, paneId);
+      if (CONNECTABLE_STATES.has(now.lifecycleState)) {
+        updatePaneEntry(stateDir, paneId, { lifecycleState: "stopped", lastError: null });
+      }
+    });
     return { sandboxName: entry.sandboxName };
   }
 
@@ -439,13 +518,16 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     // passes through, so the mapping is re-read and re-checked here under the
     // mapping lock, and the deletion claims the mapping so no bridge can
     // acknowledge itself until it is over.
+    // Herdr is asked outside the lock (a slow Herdr must not hold every other
+    // participant up); the process-based checks and the claim happen under it.
+    assertHerdrIdle(paneId);
     const entry = withPaneLock(stateDir, paneId, () => {
       const current = requirePaneEntry(stateDir, paneId);
-      assertNotBusy(paneId, current);
+      assertNoOwners(paneId, current);
       if (deletionInProgress(current) && current.deletingPid !== process.pid) {
         throw new PluginError("conflict", `Another deletion of pane ${paneId}'s sandboxes is in progress (pid ${current.deletingPid}). Nothing was deleted.`);
       }
-      return updatePaneEntry(stateDir, paneId, { deletingPid: process.pid, deletingSince: new Date().toISOString() });
+      return updatePaneEntry(stateDir, paneId, { deletingPid: process.pid, deletingToken: processStartToken(process.pid), deletingSince: new Date().toISOString() });
     });
     const names = deletionTargets(entry);
     const alreadyDeleted = new Set(entry.deletedSandboxNames ?? []);
@@ -461,12 +543,13 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       }
       for (const name of names) {
         // Every rm can take a while; look again right before each one.
+        assertHerdrIdle(paneId);
         withPaneLock(stateDir, paneId, () => {
           const now = requirePaneEntry(stateDir, paneId);
           if (now.deletingPid !== process.pid) {
             throw new PluginError("conflict", `The deletion of pane ${paneId}'s sandboxes was taken over by process ${now.deletingPid ?? "unknown"}; stopping here.`);
           }
-          assertNotBusy(paneId, now);
+          assertNoOwners(paneId, now);
         });
         try {
           sbx.runChecked(["rm", "--force", name], `deleting sandbox ${name}`);
@@ -510,16 +593,40 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
   }
 
   /**
-   * Throws when the mapping's sandbox is in use: its bridge process is alive,
-   * or Herdr reports an agent in the pane. When Herdr cannot be asked, that is
-   * a failure too, not a green light.
+   * Throws when a process owns the mapping's sandboxes: its bridge is alive,
+   * an open-shell session is attached, or another mapping that tracks one of
+   * the same sandboxes (a duplicate left by an interrupted move) has a live
+   * bridge or shell.
    * @param {string} paneId
    * @param {Record<string, any>} entry
    */
-  function assertNotBusy(paneId, entry) {
+  function assertNoOwners(paneId, entry) {
     if (bridgeIsRunning(entry)) {
       throw new PluginError("conflict", `Pane ${paneId} still runs the bridge for ${entry.sandboxName} (pid ${entry.bridgePid}, since ${entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Nothing was deleted.`);
     }
+    const shells = liveShells(entry);
+    if (shells.length > 0) {
+      throw new PluginError("conflict", `Pane ${paneId} has ${shells.length === 1 ? "an open-shell session" : `${shells.length} open-shell sessions`} in ${entry.sandboxName} (pid ${shells.map((shell) => shell.pid).join(", ")}). Close ${shells.length === 1 ? "it" : "them"} first. Nothing was deleted.`);
+    }
+    const mine = new Set(deletionTargets({ ...entry, deletedSandboxNames: [] }));
+    for (const other of Object.values(loadState(stateDir).panes)) {
+      if (other.paneId === paneId) {
+        continue;
+      }
+      const shared = deletionTargets({ ...other, deletedSandboxNames: [] }).filter((name) => mine.has(name));
+      if (shared.length > 0 && (bridgeIsRunning(other) || shellIsRunning(other))) {
+        throw new PluginError("conflict", `Pane ${other.paneId} also tracks ${shared.join(", ")} and still has a bridge or shell attached. Nothing was deleted.`);
+      }
+    }
+  }
+
+  /**
+   * Throws when Herdr reports an agent in the pane. When Herdr cannot be asked,
+   * that is a failure too, not a green light. Never called under the mapping
+   * lock: the call may take up to Herdr's own timeout.
+   * @param {string} paneId
+   */
+  function assertHerdrIdle(paneId) {
     if (typeof herdr?.getPane !== "function") {
       return;
     }
@@ -586,7 +693,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       if (deletionInProgress(entry)) {
         throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not attaching.`);
       }
-      updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid });
+      updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid, bridgeToken: processStartToken(process.pid) });
     });
   }
 
@@ -597,18 +704,15 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string} paneId
    */
   function releaseBridge(paneId) {
-    let entry;
     try {
-      entry = getPaneEntry(stateDir, paneId);
-    } catch (error) {
-      log(`Could not read the mapping for pane ${paneId} on exit: ${errorMessageOf(error)}`);
-      return;
-    }
-    if (!entry || entry.bridgePid !== process.pid) {
-      return;
-    }
-    try {
-      updatePaneEntry(stateDir, paneId, { bridgePid: null, bridgeExitedAt: new Date().toISOString() });
+      withPaneLock(stateDir, paneId, () => {
+        // Decided and written under the lock: a pid another bridge recorded meanwhile stays.
+        const entry = getPaneEntry(stateDir, paneId);
+        if (!entry || entry.bridgePid !== process.pid) {
+          return;
+        }
+        updatePaneEntry(stateDir, paneId, { bridgePid: null, bridgeToken: null, bridgeExitedAt: new Date().toISOString() });
+      });
     } catch (error) {
       log(`Could not release the mapping for pane ${paneId} on exit: ${errorMessageOf(error)}`);
     }
@@ -796,5 +900,5 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     return { mappings, sandboxError };
   }
 
-  return { prepare, connect, shell, stop, destroy, forget, acknowledgeBridge, releaseBridge, fetchChanges, describe, listAll };
+  return { prepare, connect, shell, stop, destroy, forget, acknowledgeBridge, releaseBridge, acknowledgeShell, releaseShell, fetchChanges, describe, listAll };
 }
