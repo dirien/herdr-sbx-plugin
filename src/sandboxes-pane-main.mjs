@@ -34,6 +34,9 @@ export function runCli(bin, args, { env = process.env, signal = null, timeoutMs 
       return;
     }
     const child = spawn(bin, args, { env, stdio: ["ignore", "pipe", "pipe"] });
+    // Decoded as streams, so a multi-byte character split across two chunks is not garbled.
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -62,7 +65,7 @@ export function runCli(bin, args, { env = process.env, signal = null, timeoutMs 
     };
     child.on("error", (error) => {
       done();
-      reject(new PluginError(error.code === "ENOENT" ? "startup" : "unknown", `Could not run ${bin}: ${error.message}`, { cause: error }));
+      reject(new PluginError(/** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT" ? "startup" : "unknown", `Could not run ${bin}: ${error.message}`, { cause: error }));
     });
     child.on("close", (status) => {
       done();
@@ -140,7 +143,7 @@ export function createOverlayClients({ sbxBin, herdrBin, env = process.env }) {
  * process per mapping every time, and `signal` cancels in-flight calls.
  * Pane existence comes from one `herdr pane list` call per frame rather than
  * one `pane get` per mapping.
- * @param {{stateDir: string, sbx: {listSandboxes: Function, listPorts: Function}, herdr: {listPaneIds: Function}, cache?: Map<string, any>, refreshPorts?: boolean, signal?: AbortSignal|null}} input
+ * @param {{stateDir: string, sbx: {listSandboxes: (signal?: AbortSignal|null) => Promise<Array<{name: string, status: string|null}>>, listPorts: (name: string, signal?: AbortSignal|null) => Promise<Array<{hostPort: number|null, sandboxPort: number}>>}, herdr: {listPaneIds: (signal?: AbortSignal|null) => Promise<string[]>}, cache?: Map<string, any>, refreshPorts?: boolean, signal?: AbortSignal|null}} input
  */
 export async function collectSandboxes({ stateDir, sbx, herdr, cache = new Map(), refreshPorts = true, signal = null }) {
   const state = loadState(stateDir);
@@ -305,7 +308,7 @@ export async function holdForKey(input, output, holdMs) {
 /**
  * Runs the overlay. With `once` it renders a single frame and returns.
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{once?: boolean, intervalMs?: number, output?: NodeJS.WritableStream & {isTTY?: boolean}, input?: NodeJS.ReadableStream & {isTTY?: boolean, setRawMode?: Function}}} [options]
+ * @param {{once?: boolean, intervalMs?: number, output?: NodeJS.WritableStream & {isTTY?: boolean}, input?: NodeJS.ReadableStream & {isTTY?: boolean, setRawMode?: (mode: boolean) => unknown}, holdMs?: number}} [options] `holdMs` is how long a startup error stays on screen.
  * @returns {Promise<number>}
  */
 export async function runSandboxesPane(env = process.env, { once = false, intervalMs = 3000, output = process.stdout, input = process.stdin, holdMs = 15_000 } = {}) {

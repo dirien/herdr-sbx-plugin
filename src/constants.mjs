@@ -36,6 +36,9 @@ export const AGENT_REPORT_SOURCE = "sbx.sandbox";
 /** Environment variable naming the program that opens URLs (defaults to `open` on macOS, `xdg-open` elsewhere). */
 export const OPENER_ENV = "HERDR_SBX_OPENER";
 
+/** How long `open-port` gives the URL opener to fail; one still running then (a browser started in the foreground) counts as showing the page and is not waited for. */
+export const OPENER_GRACE_MS = 2000;
+
 /** How long an action waits for the bridge it typed into a pane to update the mapping before it opens a new pane instead. */
 export const BRIDGE_START_TIMEOUT_MS = 4000;
 

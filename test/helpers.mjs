@@ -156,7 +156,7 @@ export function runAction(fixture, actionId, { context = {}, env = {} } = {}) {
  * @param {ReturnType<typeof createFixture>} fixture
  * @param {string} mode
  * @param {string} paneId
- * @param {{env?: Record<string, string>}} [options]
+ * @param {{env?: Record<string, string>, args?: string[]}} [options] Extra `args` follow the standard bridge options.
  */
 export function runBridge(fixture, mode, paneId, { env = {}, args = [] } = {}) {
   const result = spawnSync(process.execPath, [path.join(ROOT, "src", "bridge.mjs"), mode, "--state-dir", fixture.stateDir, "--config-dir", fixture.configDir, "--pane-id", paneId, "--herdr-bin", FAKE_HERDR, ...args], {
@@ -183,11 +183,6 @@ export function runEvent(fixture, eventName, payload, { env = {} } = {}) {
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
-/**
- * A mapping entry with sensible defaults for tests.
- * @param {ReturnType<typeof createFixture>} fixture
- * @param {Record<string, unknown>} [overrides]
- */
 /**
  * Starts a process whose command line looks like a bridge for `paneId` (it
  * only sleeps), so tests can mark a mapping busy with a pid that passes the
@@ -224,6 +219,11 @@ function fakeProcess(words) {
   return { pid: /** @type {number} */ (child.pid), stop: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } } };
 }
 
+/**
+ * A mapping entry with sensible defaults for tests.
+ * @param {ReturnType<typeof createFixture>} fixture
+ * @param {Record<string, unknown>} [overrides]
+ */
 export function mappingFor(fixture, overrides = {}) {
   return {
     paneId: "pane-1",

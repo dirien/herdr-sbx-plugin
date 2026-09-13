@@ -17,7 +17,7 @@ import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { sandboxGitRemote } from "./naming.mjs";
 import { buildCreateArgs, buildExecArgs, classifyFailure, createSbxClient } from "./sbx.mjs";
 import { shellQuote } from "./shell.mjs";
-import { deletePaneEntry, getPaneEntry, loadState, processStartToken, requirePaneEntry, updatePaneEntry, withPaneLock, withSandboxLocks } from "./state.mjs";
+import { deletePaneEntry, getPaneEntry, loadState, ownStartToken, processStartToken, requirePaneEntry, updatePaneEntry, withPaneLock, withSandboxLocks } from "./state.mjs";
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
@@ -49,7 +49,7 @@ export function processCommandLine(pid) {
  * is busy even before Herdr can see an agent in the pane. Pids are recycled,
  * so the process must also run `bridge.mjs` for this mapping's pane; a bridge
  * that exits cleanly clears its pid, this check covers the ones that crashed.
- * @param {{bridgePid?: number|null, paneId?: string}} entry
+ * @param {{bridgePid?: number|null, bridgeToken?: string|null, paneId?: string}} entry
  * @returns {boolean}
  */
 export function bridgeIsRunning(entry) {
@@ -130,7 +130,7 @@ export function shellIsRunning(entry) {
  * Whether an action or hook is deleting this mapping's sandboxes right now:
  * `destroy` records its pid while it works, and the record counts only while
  * that process is alive and really is a plugin action or event hook.
- * @param {{deletingPid?: number|null}} entry
+ * @param {{deletingPid?: number|null, deletingToken?: string|null}} entry
  * @returns {boolean}
  */
 export function deletionInProgress(entry) {
@@ -184,7 +184,7 @@ export function assertMountRoot(localPath) {
 /**
  * Resolves the adapter recorded in a mapping, honoring current config overrides.
  * @param {Record<string, any>} config
- * @param {{agentKind: string}} entry
+ * @param {{agentKind?: string}} entry
  */
 export function agentForEntry(config, entry) {
   return resolveAgent({ ...config, agentKind: entry.agentKind });
@@ -194,7 +194,7 @@ export function agentForEntry(config, entry) {
  * The sandboxes a mapping still owns: its current name plus every predecessor
  * it replaced, minus those already deleted. This is exactly what a deletion
  * removes, so it is also exactly what a confirmation popup must show.
- * @param {{sandboxName: string, replacesSandboxNames?: string[], deletedSandboxNames?: string[]}} entry
+ * @param {{sandboxName?: string, replacesSandboxNames?: string[], deletedSandboxNames?: string[]}} entry
  * @returns {string[]}
  */
 export function deletionTargets(entry) {
@@ -205,7 +205,7 @@ export function deletionTargets(entry) {
 /**
  * Working directory for `sbx exec`: the recorded directory in mount mode. In
  * clone mode the clone's location is up to sbx, so no directory is forced.
- * @param {{workspaceMode: string, workdir?: string, localPath: string}} entry
+ * @param {{workspaceMode?: string, workdir?: string|null, localPath?: string}} entry
  * @returns {string|null}
  */
 export function execWorkdir(entry) {
@@ -224,7 +224,7 @@ function classifyGitFailure(output) {
 
 /**
  * Creates the lifecycle API bound to one state dir, config and sbx client.
- * @param {{stateDir: string, config: Record<string, any>, sbx?: ReturnType<typeof createSbxClient>, log?: (line: string) => void, herdr?: {reportAgent?: Function, releaseAgent?: Function, getPane?: Function}|null}} input
+ * @param {{stateDir: string, config: Record<string, any>, sbx?: ReturnType<typeof createSbxClient>, log?: (line: string) => void, herdr?: {reportAgent?: (input: {paneId: string, source: string, agent: string, state: "idle"|"working"|"blocked"|"unknown", message?: string|null}) => void, releaseAgent?: (input: {paneId: string, source: string, agent: string}) => void, getPane?: (paneId: string) => Record<string, any>|null}|null}} input
  */
 export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin: config.sbxBin }), log = (line) => process.stderr.write(`${line}\n`), herdr = null }) {
   /**
@@ -467,7 +467,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     withOwnershipLocks(paneId, (entry) => {
       assertNoDeletion(paneId, entry, "not opening a shell");
       const shells = liveShells(entry).filter((shell) => shell.pid !== process.pid);
-      shells.push({ pid: process.pid, token: processStartToken(process.pid), since: new Date().toISOString(), paneId });
+      shells.push({ pid: process.pid, token: ownStartToken(), since: new Date().toISOString(), paneId });
       updatePaneEntry(stateDir, paneId, { shellPids: shells });
     });
   }
@@ -542,7 +542,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       if (deletionInProgress(current) && current.deletingPid !== process.pid) {
         throw new PluginError("conflict", `Another deletion of pane ${paneId}'s sandboxes is in progress (pid ${current.deletingPid}). Nothing was deleted.`);
       }
-      return updatePaneEntry(stateDir, paneId, { deletingPid: process.pid, deletingToken: processStartToken(process.pid), deletingSince: new Date().toISOString() });
+      return updatePaneEntry(stateDir, paneId, { deletingPid: process.pid, deletingToken: ownStartToken(), deletingSince: new Date().toISOString() });
     });
     const names = deletionTargets(entry);
     const alreadyDeleted = new Set(entry.deletedSandboxNames ?? []);
@@ -585,7 +585,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
         withPaneLock(stateDir, paneId, () => {
           const now = requirePaneEntry(stateDir, paneId);
           // What was deleted is recorded either way; the claim is released only if it is still ours.
-          const release = now.deletingPid === process.pid ? { deletingPid: null, deletingSince: null } : {};
+          const release = now.deletingPid === process.pid ? { deletingPid: null, deletingToken: null, deletingSince: null } : {};
           updatePaneEntry(stateDir, paneId, { ...(ownGone ? { lifecycleState: "missing" } : {}), deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: describeError(failure), ...release });
         });
       } catch (error) {
@@ -601,7 +601,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
         updatePaneEntry(stateDir, paneId, record);
         throw new PluginError("conflict", `The deletion of pane ${paneId}'s sandboxes was taken over by process ${now.deletingPid ?? "unknown"} after ${deleted.join(", ") || "nothing"} was deleted; the mapping was left to it.`);
       }
-      updatePaneEntry(stateDir, paneId, { ...record, ...(keepClaim ? {} : { deletingPid: null, deletingSince: null }) });
+      updatePaneEntry(stateDir, paneId, { ...record, ...(keepClaim ? {} : { deletingPid: null, deletingToken: null, deletingSince: null }) });
     });
     return { deleted, missing };
   }
@@ -648,7 +648,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     try {
       agent = herdr.getPane(paneId)?.agent ?? null;
     } catch (error) {
-      throw new PluginError(errorKindOf(error) === "unknown" ? "unknown" : errorKindOf(error), `Could not confirm with Herdr that pane ${paneId} runs no agent (${errorMessageOf(error)}). Nothing was deleted; try again.`, { output: /** @type {any} */ (error)?.output, cause: error });
+      throw new PluginError(errorKindOf(error), `Could not confirm with Herdr that pane ${paneId} runs no agent (${errorMessageOf(error)}). Nothing was deleted; try again.`, { output: /** @type {any} */ (error)?.output, cause: error });
     }
     if (agent) {
       throw new PluginError("conflict", `Pane ${paneId} is running agent "${agent}" again. Nothing was deleted; exit the agent and try again.`);
@@ -705,7 +705,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     withOwnershipLocks(paneId, (entry) => {
       assertNoDeletion(paneId, entry, "not attaching");
       assertNoOtherBridge(paneId, entry);
-      updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid, bridgeToken: processStartToken(process.pid) });
+      updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid, bridgeToken: ownStartToken() });
     });
   }
 
@@ -895,6 +895,8 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * Bundles every branch of the in-sandbox clone, copies the bundle out with
    * `sbx cp`, and fetches it into `refs/remotes/<remote>/*` on the host.
    * The clone sits at the host path inside the sandbox.
+   * @param {Record<string, any>} entry The mapping; its `sandboxName` and `localPath` are used.
+   * @param {string} remote
    * @returns {string} Combined git output.
    */
   function fetchViaBundle(entry, remote) {

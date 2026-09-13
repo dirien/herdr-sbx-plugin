@@ -55,15 +55,28 @@ test("parsePortSpec follows the sbx publish syntax", () => {
   assert.deepEqual(parsePortSpec(true), null);
 });
 
-test("openerCommand and openUrl use the override and report failures", () => {
+test("openerCommand and openUrl use the override and report failures", async () => {
   assert.equal(openerCommand({}, "darwin"), "open");
   assert.equal(openerCommand({}, "linux"), "xdg-open");
   assert.equal(openerCommand({ HERDR_SBX_OPENER: "/x/opener" }, "darwin"), "/x/opener");
-  const missing = openUrl("http://localhost:1", { HERDR_SBX_OPENER: "/definitely/missing/opener" });
+  const missing = await openUrl("http://localhost:1", { HERDR_SBX_OPENER: "/definitely/missing/opener" });
   assert.equal(missing.ok, false);
   assert.match(missing.error, /ENOENT/);
-  const ok = openUrl("http://localhost:1", { PATH: process.env.PATH, HERDR_SBX_OPENER: FAKE_OPENER });
+  const ok = await openUrl("http://localhost:1", { PATH: process.env.PATH, HERDR_SBX_OPENER: FAKE_OPENER });
   assert.equal(ok.ok, true);
+  const failing = await openUrl("http://localhost:1", { PATH: process.env.PATH, HERDR_SBX_OPENER: FAKE_OPENER, FAKE_OPENER_EXIT: "3" });
+  assert.deepEqual([failing.ok, failing.error], [false, `${FAKE_OPENER} exited with 3`]);
+});
+
+test("openUrl does not wait for an opener that runs the browser in the foreground", async () => {
+  const f = createFixture();
+  const foreground = path.join(f.root, "browser.sh");
+  writeFileSync(foreground, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const started = Date.now();
+  const running = await openUrl("http://localhost:1", { PATH: process.env.PATH, HERDR_SBX_OPENER: foreground }, { graceMs: 100 });
+  assert.equal(running.ok, true, "an opener still running after the grace period is showing the page");
+  assert.ok(Date.now() - started < 3000, "the action did not wait for the browser to exit");
+  f.cleanup();
 });
 
 test("renderSandboxes prints a table with pane, status and port links", () => {
@@ -123,6 +136,9 @@ test("runCli kills a hung command on abort and on timeout", async () => {
   await assert.rejects(runCli("/definitely/missing/bin", []), (error) => error.errorKind === "startup");
   const ok = await runCli(process.execPath, ["-e", "process.stdout.write('hi')"]);
   assert.deepEqual([ok.status, ok.stdout], [0, "hi"]);
+  // 90 kB of a three-byte character: pipe chunks split it mid-sequence, which byte-wise concatenation would garble.
+  const wide = await runCli(process.execPath, ["-e", "process.stdout.write('\u20ac'.repeat(30000))"]);
+  assert.equal(wide.stdout, "\u20ac".repeat(30000));
 });
 
 test("the overlay clients parse like the synchronous ones", async () => {

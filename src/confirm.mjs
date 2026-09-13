@@ -144,7 +144,7 @@ export function cleanupConfirmation(stateDir, requestId) {
 
 /**
  * Opens the confirmation popup and waits for the user's answer.
- * @param {{stateDir: string, herdr: {openPluginPane: Function}, pluginId: string, details: Record<string, unknown>, timeoutMs?: number, pollMs?: number}} input
+ * @param {{stateDir: string, herdr: {openPluginPane: (input: {pluginId: string, entrypointId: string, env?: Record<string, string>, focus?: boolean}) => void}, pluginId: string, details: Record<string, unknown>, timeoutMs?: number, pollMs?: number}} input
  * @returns {Promise<boolean>} True only when the user confirmed.
  */
 export async function requestDeletionConfirmation({ stateDir, herdr, pluginId, details, timeoutMs = CONFIRMATION_TTL_MS, pollMs = 250 }) {

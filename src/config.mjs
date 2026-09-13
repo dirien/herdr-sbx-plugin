@@ -17,7 +17,39 @@ export const PANE_DIRECTIONS = Object.freeze(["right", "down"]);
 /** Where start-agent puts the agent: a split next to the focused pane or a new tab. */
 export const OPEN_MODES = Object.freeze(["split", "tab"]);
 
-/** Every supported key with its default value. */
+/**
+ * The validated user configuration: every key of {@link CONFIG_DEFAULTS} with
+ * the type the README documents for it. New config keys are added here too.
+ * @typedef {object} PluginConfig
+ * @property {string} agentKind
+ * @property {Record<string, string[]>} agentArgs
+ * @property {string[]} agentEnv
+ * @property {Record<string, unknown>} customAgents
+ * @property {"mount"|"clone"} workspaceMode
+ * @property {string|null} template
+ * @property {string[]} kits
+ * @property {string[]} kitArgs
+ * @property {string[]} env
+ * @property {string[]} envFiles
+ * @property {string[]} publish
+ * @property {number|null} cpus
+ * @property {string|null} memory
+ * @property {string[]} denyNetwork
+ * @property {string[]} extraWorkspaces
+ * @property {string|null} sbxBin Null until {@link loadConfig} resolves the executable.
+ * @property {string} shell
+ * @property {"right"|"down"} paneDirection
+ * @property {number} paneRatio
+ * @property {"split"|"tab"} openIn
+ * @property {boolean} reportAgentStatus
+ * @property {string} sandboxNamePrefix
+ * @property {boolean} cleanupOnWorktreeRemoved
+ */
+
+/**
+ * Every supported key with its default value.
+ * @type {Readonly<PluginConfig>}
+ */
 export const CONFIG_DEFAULTS = Object.freeze({
   agentKind: "claude-code",
   agentArgs: {},
@@ -70,7 +102,7 @@ function isPlainObject(value) {
 /**
  * Validates a raw config object and merges it over the defaults.
  * @param {Record<string, unknown>} raw
- * @returns {typeof CONFIG_DEFAULTS & Record<string, any>}
+ * @returns {PluginConfig}
  */
 export function validateConfig(raw) {
   if (!isPlainObject(raw)) {
@@ -80,7 +112,8 @@ export function validateConfig(raw) {
   if (unknown.length > 0) {
     throw new PluginError("config", `Unknown config key(s): ${unknown.join(", ")}. Supported keys: ${Object.keys(CONFIG_DEFAULTS).join(", ")}.`);
   }
-  const config = { ...CONFIG_DEFAULTS, ...raw };
+  // Typed loosely until every field has been checked below.
+  const config = /** @type {Record<string, any>} */ ({ ...CONFIG_DEFAULTS, ...raw });
   const fail = (key, expectation) => {
     throw new PluginError("config", `Config key "${key}" ${expectation}.`);
   };
@@ -105,14 +138,14 @@ export function validateConfig(raw) {
   if (typeof config.paneRatio !== "number" || !(config.paneRatio > 0 && config.paneRatio < 1)) fail("paneRatio", "must be a number between 0 and 1 (exclusive)");
   if (typeof config.sandboxNamePrefix !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(config.sandboxNamePrefix)) fail("sandboxNamePrefix", "must start with a letter or digit and contain only letters, digits and hyphens");
   if (typeof config.cleanupOnWorktreeRemoved !== "boolean") fail("cleanupOnWorktreeRemoved", "must be true or false");
-  return config;
+  return /** @type {PluginConfig} */ (config);
 }
 
 /**
  * Loads and validates the configuration, resolving the sbx executable.
  * @param {string} configDir
  * @param {NodeJS.ProcessEnv} [env]
- * @returns {ReturnType<typeof validateConfig> & {sbxBin: string}}
+ * @returns {PluginConfig & {sbxBin: string}}
  */
 export function loadConfig(configDir, env = process.env) {
   const file = configPath(configDir);

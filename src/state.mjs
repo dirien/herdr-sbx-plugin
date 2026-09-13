@@ -210,6 +210,20 @@ export function processStartToken(pid) {
   return started === "" ? null : `ps:${started}`;
 }
 
+let ownToken;
+
+/**
+ * This process's own start token, computed once: on macOS every lookup spawns
+ * `ps`, and a process's start time never changes.
+ * @returns {string|null}
+ */
+export function ownStartToken() {
+  if (ownToken === undefined) {
+    ownToken = processStartToken(process.pid);
+  }
+  return ownToken;
+}
+
 /** After this long a lock whose owner is alive but cannot be identified is treated as abandoned; sections are held for milliseconds. */
 const LOCK_UNVERIFIED_MAX_MS = 60_000;
 
@@ -271,7 +285,7 @@ function sleepSync(ms) {
  * because a lock can only be replaced by a reclaimer, and reclaimers wait for
  * each other.
  * @param {string} lock
- * @param {number} deadOwner The pid seen in the lock, or NaN for an empty lock.
+ * @param {string} seenText The lock's content as it was inspected, so only that very lock is removed.
  * @param {number} waitMs Age after which an empty lock counts as abandoned.
  */
 function reclaimStaleLock(lock, seenText, waitMs) {
@@ -402,7 +416,7 @@ function withLockFile(lock, what, fn, waitMs) {
     }
     if (fd !== null) {
       try {
-        writeFileSync(fd, `${process.pid} ${processStartToken(process.pid) ?? "-"}\n`);
+        writeFileSync(fd, `${process.pid} ${ownStartToken() ?? "-"}\n`);
       } finally {
         closeSync(fd);
       }

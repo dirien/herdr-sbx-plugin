@@ -33,13 +33,6 @@ export async function askWithTimeout(prompt, timeoutMs, streams) {
   }
 }
 
-/**
- * Runs the popup flow and returns the exit code.
- * @param {NodeJS.ProcessEnv} [env]
- * @param {{input: NodeJS.ReadableStream, output: NodeJS.WritableStream}} [streams]
- * @param {{installSignalHandlers?: boolean}} [options] Install SIGINT/SIGTERM/SIGHUP handlers that record a cancellation.
- * @returns {Promise<number>}
- */
 /** Line width the popup wraps its text to. */
 const POPUP_WIDTH = 96;
 
@@ -67,6 +60,13 @@ export function wrapText(text, width) {
   return lines;
 }
 
+/**
+ * Runs the popup flow and returns the exit code.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{input: NodeJS.ReadableStream, output: NodeJS.WritableStream}} [streams]
+ * @param {{installSignalHandlers?: boolean}} [options] Install SIGINT/SIGTERM/SIGHUP handlers that record a cancellation.
+ * @returns {Promise<number>}
+ */
 export async function runConfirmationPopup(env = process.env, streams = { input: process.stdin, output: process.stdout }, { installSignalHandlers = false } = {}) {
   const write = (line) => streams.output.write(`${line}\n`);
   const requestId = env[CONFIRMATION_ID_ENV];

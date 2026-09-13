@@ -92,7 +92,7 @@ export function validateCustomAgent(kind, profile) {
 
 /**
  * Returns every adapter available for a config: built-ins overlaid by custom profiles.
- * @param {{customAgents: Record<string, unknown>}} config
+ * @param {{customAgents?: Record<string, unknown>}} config
  * @returns {Record<string, ReturnType<typeof validateCustomAgent>>}
  */
 export function availableAgents(config) {
@@ -105,7 +105,7 @@ export function availableAgents(config) {
 
 /**
  * Resolves the configured agent and its final launch argv.
- * @param {{agentKind: string, agentArgs: Record<string, string[]>, customAgents: Record<string, unknown>}} config
+ * @param {{agentKind: string, agentArgs?: Record<string, string[]>, customAgents?: Record<string, unknown>}} config
  * @returns {ReturnType<typeof validateCustomAgent> & {kind: string, launchArgv: string[]}}
  */
 export function resolveAgent(config) {

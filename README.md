@@ -322,6 +322,9 @@ Publish ports with the `publish` config key or `sbx ports <name> --publish`.
 `info` and the `sandboxes` overlay print each one as an `sbx://<sandbox>/<port>`
 link; Ctrl-click it in Herdr and the plugin opens `http://localhost:<host port>`
 with `open` on macOS or `xdg-open` elsewhere (override with `HERDR_SBX_OPENER`).
+The opener runs detached: one that exits with an error within two seconds makes
+the result report `"opened":false`, while one still running then (a browser
+started in the foreground) counts as showing the page and is not waited for.
 Links only work for sandboxes this plugin created and ports `sbx` reports as
 published, so text printed by an agent cannot steer your browser to another
 local service. The overlay refreshes every few seconds, keeps working while a

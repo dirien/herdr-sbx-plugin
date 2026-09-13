@@ -359,6 +359,7 @@ function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
       if (bridgeIsRunning(latest) || (deletionInProgress(latest) && latest.deletingPid !== process.pid)) {
         throw new PluginError("conflict", `The mapping of pane ${oldPaneId} is in use again (bridge ${latest.bridgePid ?? "none"}, deletion ${latest.deletingPid ?? "none"}); nothing was moved.`);
       }
+      /** @type {Record<string, any>} */
       const next = { ...latest, workspaceId: workspaceOf(deps), sourcePaneId: focused, adoptedFrom: oldPaneId };
       if (paneId === oldPaneId) {
         // Herdr handed out the orphan's own id again; the saved entry is the one to keep.
@@ -698,7 +699,7 @@ const ACTIONS = {
     return { payload: { entrypoint: "sandboxes" } };
   },
 
-  "open-port"(deps) {
+  async "open-port"(deps) {
     const clicked = deps.context.clicked_url ?? deps.env.HERDR_PLUGIN_CLICKED_URL ?? null;
     let sandboxName;
     let sandboxPort = null;
@@ -735,7 +736,7 @@ const ACTIONS = {
     }
     const hostPort = match.hostPort;
     const url = `http://localhost:${hostPort}`;
-    const opened = openUrl(url, deps.env);
+    const opened = await openUrl(url, deps.env);
     if (!opened.ok) {
       process.stderr.write(`could not open ${url} with ${opened.command}: ${opened.error}\n`);
     }

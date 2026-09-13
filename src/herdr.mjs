@@ -34,7 +34,8 @@ export function createHerdrClient({ bin = "herdr", env = process.env } = {}) {
     const stdout = result.stdout ?? "";
     const output = `${stdout}${result.stderr ?? ""}`;
     if (result.status !== 0) {
-      throw new PluginError("unknown", `herdr ${args.slice(0, 2).join(" ")} failed while ${step} (exit ${result.status}).`, { output });
+      const exit = result.status === null ? `signal ${result.signal}` : `exit ${result.status}`;
+      throw new PluginError("unknown", `herdr ${args.slice(0, 2).join(" ")} failed while ${step} (${exit}).`, { output });
     }
     let json = null;
     try {
@@ -154,10 +155,6 @@ export function createHerdrClient({ bin = "herdr", env = process.env } = {}) {
   }
 
   /**
-   * Opens a manifest-declared plugin pane (used for the confirmation popup).
-   * @param {{pluginId: string, entrypointId: string, env?: Record<string, string>, focus?: boolean}} input
-   */
-  /**
    * Lists the ids of every pane Herdr knows, in one `herdr pane list` call.
    * @returns {string[]}
    */
@@ -178,6 +175,10 @@ export function createHerdrClient({ bin = "herdr", env = process.env } = {}) {
     run(["pane", "close", paneId], "closing the pane");
   }
 
+  /**
+   * Opens a manifest-declared plugin pane (used for the confirmation popup).
+   * @param {{pluginId: string, entrypointId: string, env?: Record<string, string>, focus?: boolean}} input
+   */
   function openPluginPane({ pluginId, entrypointId, env: paneEnv = {}, focus = true }) {
     const args = ["plugin", "pane", "open", "--plugin", pluginId, "--entrypoint", entrypointId];
     for (const [key, value] of Object.entries(paneEnv)) {

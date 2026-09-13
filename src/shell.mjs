@@ -7,7 +7,9 @@
  */
 import { PluginError } from "./errors.mjs";
 
-const SAFE_WORD = /^[A-Za-z0-9_/.:=@%+,-]+$/;
+// A bare word may not start with `=` (zsh expands `=cmd`) or `%` (fish expands `%job`);
+// `~` is never in the set, so home-directory expansion cannot happen either.
+const SAFE_WORD = /^[A-Za-z0-9_/.:@+,-][A-Za-z0-9_/.:=@%+,-]*$/;
 
 /**
  * Quotes one word for a POSIX or fish shell.

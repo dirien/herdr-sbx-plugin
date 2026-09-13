@@ -63,3 +63,10 @@ test("buildPaneCommand uses env for fish compatibility and quotes words", () => 
   assert.throws(() => buildPaneCommand({ argv: ["ls"], env: { "bad-name": "x" } }), /Invalid environment variable name/);
   assert.throws(() => buildPaneCommand({ argv: [] }), /non-empty argv/);
 });
+
+test("shellQuote quotes words that zsh or fish would expand when bare", () => {
+  assert.equal(shellQuote("=ls"), "'=ls'", "zsh expands a bare =cmd to its path");
+  assert.equal(shellQuote("%1"), "'%1'", "fish expands a bare %job");
+  assert.equal(shellQuote("a=b"), "a=b", "an = inside a word is fine");
+  assert.equal(shellQuote("50%"), "50%");
+});
