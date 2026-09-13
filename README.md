@@ -8,13 +8,14 @@ One coding agent per Docker Sandbox, driven from Herdr.
 [![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![CI](https://github.com/dirien/herdr-sbx-plugin/actions/workflows/ci.yml/badge.svg)](https://github.com/dirien/herdr-sbx-plugin/actions/workflows/ci.yml)
 
+![Your repository is mounted into a Docker Sandbox microVM; the plugin creates the sandbox, verifies the agent and attaches it to a Herdr pane; credentials are injected by the sbx proxy and never enter the VM.](docs/assets/herdr-sbx-plugin-hero.svg)
+
 This [Herdr](https://herdr.dev) plugin starts Claude Code, Codex, Gemini CLI,
 OpenCode, Copilot CLI or Cursor Agent inside a
 [Docker Sandbox](https://docs.docker.com/ai/sandboxes/), a microVM with its
 own kernel, filesystem and network policy, and gives it a Herdr pane on your
-side. Herdr keeps doing what it does, status detection and key bindings
-included; the `sbx` CLI does the isolation; the plugin is the thin layer in
-between.
+side. Herdr keeps its status detection and key bindings, `sbx` does the
+isolation, and the plugin is the thin layer between the two.
 
 Your repository is mounted into the VM at its own path, so the agent's edits
 land in your checkout as they happen. Credentials never enter the VM: `sbx`
