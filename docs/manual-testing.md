@@ -42,14 +42,21 @@ herdr --version                         # 0.9.0 or newer
 sbx version --json                      # 0.42 or newer; "server" must be present
 sbx daemon status                       # running; otherwise: sbx daemon start
 sbx secret ls                           # an entry for your agent's API (anthropic, openai, ...)
-sbx policy ls                           # deny-all needs: sbx policy allow network api.anthropic.com
+sbx policy ls                           # a preset must be chosen; deny-all needs: sbx policy allow network api.anthropic.com
+```
+
+If `sbx policy ls` shows no preset yet, choose one now; the plugin creates
+sandboxes from a process that cannot answer the interactive prompt:
+
+```bash
+sbx policy init balanced
 ```
 
 If `sbx secret ls` is empty:
 
 ```bash
-sbx secret set anthropic -t "$ANTHROPIC_API_KEY"     # Claude Code
-sbx secret set github --command 'gh auth token'      # optional, for git pushes from the VM
+echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic   # Claude Code
+sbx secret set github --command 'gh auth token'        # optional, for git pushes from the VM
 ```
 
 Create a throwaway repository to use as the workspace:
@@ -223,6 +230,23 @@ env | grep -c SANDBOX  # sandbox environment variables are present
 exit
 ```
 
+## 7b. Ownership guards
+
+While the shell pane from step 7 is still open, run `forget-mapping` from the
+agent pane. Expect `errorKind: "conflict"` mentioning an open-shell session
+and no popup. `reconnect` from the agent pane must still work with the shell
+open; exit the agent again. While the agent is running, `forget-mapping` and
+`replace-sandbox` must also be refused with `conflict` (the bridge is alive),
+and a second `reconnect` too. Close the shell pane, then run `forget-mapping`
+once more to see the popup appear; cancel it.
+
+```bash
+ls "$(herdr plugin log list --plugin sbx.sandbox --limit 1 >/dev/null; herdr plugin action invoke doctor --plugin sbx.sandbox >/dev/null; sleep 2; herdr plugin log list --plugin sbx.sandbox --limit 1 | grep -o '"stateDir":"[^"]*"' | cut -d'"' -f4)/panes"
+```
+
+Expect one `.json` file per mapping and no `.lock` files left behind once no
+action is running.
+
 ## 8. stop, then reconnect
 
 Run `stop` from the agent pane. Expect a toast "Docker Sandbox stopped" and
@@ -293,8 +317,11 @@ git -C ~/tmp/sbx-plugin-demo branch -r    # sandbox-herdr-claude-code-.../agent-
 
 Record the working directory the agent started in. The plugin passes no
 `--workdir` in clone mode; if the agent did not start inside the clone, that
-assumption needs a fix. Running `fetch-changes` while the sandbox is stopped
-must fail with `errorKind: "network"` and a hint to start it first.
+assumption needs a fix. Then run `stop` and `fetch-changes` again: the result
+must report `"transport": "bundle"`, because the git remote `sbx` registers
+only lives while an `sbx run` session is attached, and the branches must still
+arrive. Each `keep` entry names a local branch that would preserve commits the
+host does not reach yet.
 
 ## 13. Driving the plugin from a script
 
