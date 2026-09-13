@@ -1248,3 +1248,19 @@ test("an open shell blocks forget-mapping and replace-sandbox but not reconnect,
   f.cleanup();
   reused.cleanup();
 });
+
+test("a shell opened under the old pane still protects the sandbox after the mapping was re-homed", () => {
+  const shell = fakeShellProcess("wC:p2");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "wC:p2": mappingFor({ worktree: p.worktree }, { paneId: "wC:p2", workspaceId: "wC", lifecycleState: "stopped", shellPids: [{ pid: shell.pid, since: "2026-09-13T00:00:00.000Z", paneId: "wC:p2" }] }) }) });
+  const moved = runAction(f, "reconnect", { context: { focused_pane_id: "wP:p1", workspace_id: "wP" }, env: { FAKE_HERDR_MISSING_PANES: "wC:p2" } });
+  assert.equal(moved.result.ok, true, JSON.stringify(moved.result));
+  assert.equal(moved.result.paneId, "pane-new-1");
+  const entry = f.mappings().panes["pane-new-1"];
+  assert.deepEqual(entry.shellPids.map((item) => [item.pid, item.paneId]), [[shell.pid, "wC:p2"]], "the shell record travels with the mapping and keeps its own pane id");
+  const { result } = runAction(f, "forget-mapping", { context: { focused_pane_id: "pane-new-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_MISSING_PANES: "wC:p2" } });
+  assert.equal(result.errorKind, "conflict", JSON.stringify(result));
+  assert.match(result.message, /an open-shell session/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"), "the sandbox under the shell was not deleted");
+  shell.stop();
+  f.cleanup();
+});

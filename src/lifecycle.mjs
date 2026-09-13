@@ -100,12 +100,15 @@ function processOwns(record, scripts, paneId = null) {
 
 /**
  * The open-shell sessions of a mapping that are still alive: entries of
- * `shellPids` whose process runs `bridge.mjs shell` for the pane.
- * @param {{shellPids?: Array<{pid: number, token?: string|null, since?: string}>, paneId?: string}} entry
- * @returns {Array<{pid: number, token?: string|null, since?: string}>}
+ * `shellPids` whose process runs `bridge.mjs shell` for the pane the shell
+ * was opened for. A shell records that pane itself, because a mapping can be
+ * moved to another pane (reconnect re-homing an orphan) while the shell keeps
+ * running with the old id on its command line.
+ * @param {{shellPids?: Array<{pid: number, token?: string|null, since?: string, paneId?: string}>, paneId?: string}} entry
+ * @returns {Array<{pid: number, token?: string|null, since?: string, paneId?: string}>}
  */
 export function liveShells(entry) {
-  return (entry?.shellPids ?? []).filter((shell) => processOwns({ pid: shell.pid, token: shell.token ?? null }, ["bridge.mjs"], entry?.paneId) && (processCommandLine(shell.pid) ?? "shell").includes(" shell "));
+  return (entry?.shellPids ?? []).filter((shell) => processOwns({ pid: shell.pid, token: shell.token ?? null }, ["bridge.mjs"], shell.paneId ?? entry?.paneId) && (processCommandLine(shell.pid) ?? "shell").includes(" shell "));
 }
 
 /**
@@ -451,7 +454,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
         throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not opening a shell.`);
       }
       const shells = liveShells(entry).filter((shell) => shell.pid !== process.pid);
-      shells.push({ pid: process.pid, token: processStartToken(process.pid), since: new Date().toISOString() });
+      shells.push({ pid: process.pid, token: processStartToken(process.pid), since: new Date().toISOString(), paneId });
       updatePaneEntry(stateDir, paneId, { shellPids: shells });
     });
   }
