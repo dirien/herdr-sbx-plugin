@@ -54,8 +54,9 @@ async function handleEventUnsafe(env) {
     log(`no sandbox mapped to ${removedPath}`);
     return 0;
   }
-  const lifecycle = createLifecycle({ stateDir: pluginEnv.stateDir, config, log });
   const herdr = createHerdrClient({ bin: pluginEnv.herdrBin, env });
+  // The lifecycle asks Herdr about the pane before every deletion, like the actions do.
+  const lifecycle = createLifecycle({ stateDir: pluginEnv.stateDir, config, log, herdr });
   // The sandboxes may hold work that exists only inside them (clone mode).
   const targets = matches.flatMap(([, entry]) => deletionTargets(entry));
   const confirmed = await requestDeletionConfirmation({

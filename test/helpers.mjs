@@ -2,7 +2,7 @@
  * Shared fixture helpers: temp state/config/worktree directories, fake CLIs,
  * and runners that execute the plugin scripts as real child processes.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -188,6 +188,19 @@ export function runEvent(fixture, eventName, payload, { env = {} } = {}) {
  * @param {ReturnType<typeof createFixture>} fixture
  * @param {Record<string, unknown>} [overrides]
  */
+/**
+ * Starts a process whose command line looks like a bridge for `paneId` (it
+ * only sleeps), so tests can mark a mapping busy with a pid that passes the
+ * identity check. Call `stop()` when done.
+ * @param {string} paneId
+ * @returns {{pid: number, stop: () => void}}
+ */
+export function fakeBridgeProcess(paneId) {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", path.join("src", "bridge.mjs"), "connect", "--pane-id", paneId], { cwd: ROOT, stdio: "ignore" });
+  child.unref();
+  return { pid: /** @type {number} */ (child.pid), stop: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } } };
+}
+
 export function mappingFor(fixture, overrides = {}) {
   return {
     paneId: "pane-1",

@@ -7,7 +7,7 @@ import { parseResultLine } from "../src/result.mjs";
 import { bridgeStartTimeout, entryCwd, keepBranchCommand } from "../src/action-main.mjs";
 import path from "node:path";
 import { test } from "node:test";
-import { FAKE_HERDR, ROOT, createFixture, git, mappingFor, runAction } from "./helpers.mjs";
+import { FAKE_HERDR, ROOT, createFixture, fakeBridgeProcess, git, mappingFor, runAction } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -1069,20 +1069,22 @@ test("fetch-changes keeps its result when the bundle cleanup inside the sandbox 
 });
 
 test("actions refuse to touch a mapping whose bridge process is still alive, even before Herdr sees an agent", () => {
+  const bridge = fakeBridgeProcess("pane-1");
   const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
-    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "creating", bridgePid: process.pid, bridgeStartedAt: "2026-09-12T20:00:00.000Z" }),
+    "pane-1": mappingFor({ worktree: p.worktree }, { lifecycleState: "creating", bridgePid: bridge.pid, bridgeStartedAt: "2026-09-12T20:00:00.000Z" }),
     "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", bridgePid: 2147483647, bridgeStartedAt: "2026-09-12T20:00:00.000Z" }),
   }) });
   for (const action of ["reconnect", "forget-mapping", "replace-sandbox"]) {
     const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed" } });
     assert.equal(result.ok, false, action);
     assert.equal(result.errorKind, "conflict", action);
-    assert.match(result.message, new RegExp(`still runs the bridge for ${NAME} \\(pid ${process.pid}`), action);
+    assert.match(result.message, new RegExp(`still runs the bridge for ${NAME} \\(pid ${bridge.pid}`), action);
   }
   assert.deepEqual(f.confirmations(), [], "no popup was opened for a busy mapping");
   assert.ok(f.sbxSandboxes().some((item) => item.name === NAME), "nothing was deleted");
   const dead = runAction(f, "reconnect", { context: { focused_pane_id: "pane-2" } });
   assert.equal(dead.result.ok, true, JSON.stringify(dead.result));
+  bridge.stop();
   f.cleanup();
 });
 
@@ -1121,9 +1123,10 @@ test("replace-sandbox still starts the replacement when the pane cannot be relab
 });
 
 test("a sandbox whose agent reconnected while the deletion popup was open is not deleted", () => {
+  const bridge = fakeBridgeProcess("pane-1");
   for (const action of ["forget-mapping", "replace-sandbox"]) {
     const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
-    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(process.pid) } });
+    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(bridge.pid) } });
     assert.equal(result.ok, false, action);
     assert.equal(result.errorKind, "conflict", action);
     assert.match(result.message, /still runs the bridge for .*Nothing was deleted/, action);
@@ -1132,4 +1135,5 @@ test("a sandbox whose agent reconnected while the deletion popup was open is not
     assert.equal(f.mappings().panes["pane-1"].sandboxName, NAME, `${action}: the mapping is untouched`);
     f.cleanup();
   }
+  bridge.stop();
 });

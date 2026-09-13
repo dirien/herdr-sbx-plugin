@@ -3,10 +3,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 import { CONFIG_DEFAULTS } from "../src/config.mjs";
-import { bridgeIsRunning, createLifecycle, deletionTargets } from "../src/lifecycle.mjs";
+import { bridgeIsRunning, createLifecycle, deletionTargets, processCommandLine } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
 import { deletePaneEntry } from "../src/state.mjs";
-import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, mappingFor } from "./helpers.mjs";
+import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, fakeBridgeProcess, mappingFor } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -154,12 +154,21 @@ test("prepare takes a reused sandbox off the deletion checkpoint so a later dest
   f.cleanup();
 });
 
-test("bridgeIsRunning tells a live bridge process from a dead or unknown one", () => {
-  assert.equal(bridgeIsRunning({ bridgePid: process.pid }), true);
-  assert.equal(bridgeIsRunning({ bridgePid: 2147483647 }), false);
-  assert.equal(bridgeIsRunning({ bridgePid: null }), false);
-  assert.equal(bridgeIsRunning({}), false);
-  assert.equal(bridgeIsRunning({ bridgePid: -1 }), false);
+test("bridgeIsRunning tells a live bridge for the pane from a dead, recycled or unrelated pid", () => {
+  const bridge = fakeBridgeProcess("pane-1");
+  try {
+    assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, paneId: "pane-1" }), true);
+    assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, paneId: "pane-10" }), false, "a bridge for another pane is not this mapping's bridge");
+    assert.equal(bridgeIsRunning({ bridgePid: process.pid, paneId: "pane-1" }), false, "a recycled pid now running something else does not count");
+    assert.equal(bridgeIsRunning({ bridgePid: 2147483647, paneId: "pane-1" }), false);
+    assert.equal(bridgeIsRunning({ bridgePid: 1, paneId: "pane-1" }), false, "another user's process is never our bridge");
+    assert.equal(bridgeIsRunning({ bridgePid: null, paneId: "pane-1" }), false);
+    assert.equal(bridgeIsRunning({}), false);
+    assert.equal(bridgeIsRunning({ bridgePid: -1 }), false);
+    assert.match(processCommandLine(bridge.pid), /bridge\.mjs connect --pane-id pane-1/);
+  } finally {
+    bridge.stop();
+  }
 });
 
 test("prepare deletes a sandbox whose mapping was forgotten while sbx create was running", async () => {
@@ -188,8 +197,9 @@ test("prepare deletes a sandbox whose mapping was forgotten while sbx create was
 });
 
 test("destroy refuses right before sbx rm when a bridge or an agent is active again", () => {
+  const bridge = fakeBridgeProcess("pane-1");
   const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
-    "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: process.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+    "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
     "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2" }),
   }) });
   const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
@@ -198,5 +208,6 @@ test("destroy refuses right before sbx rm when a bridge or an agent is active ag
   assert.throws(() => lifecycle.forget("pane-2"), (error) => error.errorKind === "conflict" && /running agent "claude" again/.test(error.message));
   assert.deepEqual(f.sbxCalls(), [], "no sbx rm ran");
   assert.deepEqual(Object.keys(f.mappings().panes).sort(), ["pane-1", "pane-2"]);
+  bridge.stop();
   f.cleanup();
 });

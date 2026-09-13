@@ -3,7 +3,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { removedWorktreePath } from "../src/events-main.mjs";
-import { createFixture, mappingFor, runEvent } from "./helpers.mjs";
+import { createFixture, fakeBridgeProcess, mappingFor, runEvent } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -87,12 +87,20 @@ test("a failing deletion keeps the mapping and exits 1", () => {
   f.cleanup();
 });
 
-test("worktree.removed keeps a sandbox whose bridge came back while the popup was open", () => {
+test("worktree.removed keeps a sandbox whose bridge or agent came back while the popup was open", () => {
+  const bridge = fakeBridgeProcess("pane-1");
   const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
-  const { status, stderr } = runEvent(f, "worktree.removed", removedEvent(f.worktree), { env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(process.pid) } });
+  const { status, stderr } = runEvent(f, "worktree.removed", removedEvent(f.worktree), { env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(bridge.pid) } });
   assert.equal(status, 1);
   assert.match(stderr, /still runs the bridge for .*Nothing was deleted/);
   assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"), "no sbx rm ran");
   assert.deepEqual(Object.keys(f.mappings().panes), ["pane-1"]);
+  bridge.stop();
+  const detected = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const agent = runEvent(detected, "worktree.removed", removedEvent(detected.worktree), { env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_PANE_AGENT: "claude" } });
+  assert.equal(agent.status, 1);
+  assert.match(agent.stderr, /running agent "claude" again/);
+  assert.ok(!detected.sbxCalls().some((call) => call[0] === "rm"), "Herdr's agent record is checked by the hook too");
   f.cleanup();
+  detected.cleanup();
 });

@@ -262,3 +262,14 @@ test("bridge reports bad arguments", () => {
   assert.deepEqual(parseBridgeArgs(["shell", "--state-dir", "/s", "--config-dir", "/c", "--pane-id", "p"]), { mode: "shell", stateDir: "/s", configDir: "/c", paneId: "p", herdrBin: "herdr", sbxBin: null, launchId: null });
   assert.equal(parseBridgeArgs(["start", "--state-dir", "/s", "--config-dir", "/c", "--pane-id", "p", "--herdr-bin", "/opt/herdr"]).herdrBin, "/opt/herdr");
 });
+
+test("the bridge gives the mapping back when it exits, so a recycled pid can never look busy", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const { status } = runBridge(f, "connect", "pane-1", { args: ["--launch-id", "abc123"] });
+  assert.equal(status, 0);
+  const entry = f.mappings().panes["pane-1"];
+  assert.equal(entry.bridgePid, null);
+  assert.ok(entry.bridgeExitedAt, "exit is recorded");
+  assert.equal(entry.bridgeLaunchId, "abc123", "the acknowledgement itself is kept for the action that waited on it");
+  f.cleanup();
+});

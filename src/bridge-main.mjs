@@ -55,18 +55,21 @@ export function runBridge(argv) {
     }
     const herdr = createHerdrClient({ bin: herdrBin });
     const lifecycle = createLifecycle({ stateDir, config, log, herdr });
-    if (mode !== "shell") {
-      // Actions wait for this acknowledgement; a shell pane touches no lifecycle state.
-      lifecycle.acknowledgeBridge(paneId, launchId);
+    if (mode === "shell") {
+      // A shell pane touches no lifecycle state.
+      return lifecycle.shell(paneId).exitCode;
     }
-    if (mode === "start") {
-      lifecycle.prepare(paneId);
+    // Actions wait for this acknowledgement, and the pid it records marks the
+    // mapping busy until this process gives it back on the way out.
+    lifecycle.acknowledgeBridge(paneId, launchId);
+    try {
+      if (mode === "start") {
+        lifecycle.prepare(paneId);
+      }
       return lifecycle.connect(paneId).exitCode;
+    } finally {
+      lifecycle.releaseBridge(paneId);
     }
-    if (mode === "connect") {
-      return lifecycle.connect(paneId).exitCode;
-    }
-    return lifecycle.shell(paneId).exitCode;
   } catch (error) {
     log(`error: ${errorMessageOf(error)}`);
     const output = /** @type {any} */ (error)?.output;

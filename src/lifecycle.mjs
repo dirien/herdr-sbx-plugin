@@ -7,7 +7,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { resolveAgent } from "./agents.mjs";
@@ -23,11 +23,33 @@ import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneE
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
 
 /**
- * Whether the bridge process that last acknowledged a mapping is still alive.
- * The bridge lives exactly as long as the preparation and the attached agent
- * session, so a live one means the sandbox is busy even before Herdr can see
- * an agent in the pane.
- * @param {{bridgePid?: number|null}} entry
+ * The command line of a process, or null when it cannot be read. Linux exposes
+ * it under /proc; elsewhere `ps` answers.
+ * @param {number} pid
+ * @returns {string|null}
+ */
+export function processCommandLine(pid) {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
+  } catch {
+    // Not Linux, or the process is gone: fall through to ps.
+  }
+  const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 5000 });
+  if (result.error || result.status !== 0) {
+    return null;
+  }
+  const line = (result.stdout ?? "").trim();
+  return line === "" ? null : line;
+}
+
+/**
+ * Whether the bridge process that last acknowledged a mapping is still alive
+ * and really is that bridge. The bridge lives exactly as long as the
+ * preparation and the attached agent session, so a live one means the sandbox
+ * is busy even before Herdr can see an agent in the pane. Pids are recycled,
+ * so the process must also run `bridge.mjs` for this mapping's pane; a bridge
+ * that exits cleanly clears its pid, this check covers the ones that crashed.
+ * @param {{bridgePid?: number|null, paneId?: string}} entry
  * @returns {boolean}
  */
 export function bridgeIsRunning(entry) {
@@ -37,11 +59,19 @@ export function bridgeIsRunning(entry) {
   }
   try {
     process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the process exists but belongs to someone else; only ESRCH means gone.
-    return /** @type {any} */ (error).code === "EPERM";
+  } catch {
+    // ESRCH: gone. EPERM: another user's process, which a bridge of ours never is.
+    return false;
   }
+  const commandLine = processCommandLine(pid);
+  if (commandLine === null) {
+    // Alive but uninspectable: err on the side of treating the sandbox as busy.
+    return true;
+  }
+  const words = commandLine.split(/\s+/);
+  const runsBridge = words.some((word) => word.endsWith("bridge.mjs"));
+  const paneIndex = words.indexOf("--pane-id");
+  return runsBridge && paneIndex !== -1 && words[paneIndex + 1] === String(entry.paneId ?? "");
 }
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
@@ -477,6 +507,30 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
   }
 
   /**
+   * Clears this process's ownership of a mapping when the bridge exits, so a
+   * recycled pid can never make the mapping look busy later. A mapping that
+   * moved on to another bridge, or is gone, is left alone.
+   * @param {string} paneId
+   */
+  function releaseBridge(paneId) {
+    let entry;
+    try {
+      entry = getPaneEntry(stateDir, paneId);
+    } catch (error) {
+      log(`Could not read the mapping for pane ${paneId} on exit: ${errorMessageOf(error)}`);
+      return;
+    }
+    if (!entry || entry.bridgePid !== process.pid) {
+      return;
+    }
+    try {
+      updatePaneEntry(stateDir, paneId, { bridgePid: null, bridgeExitedAt: new Date().toISOString() });
+    } catch (error) {
+      log(`Could not release the mapping for pane ${paneId} on exit: ${errorMessageOf(error)}`);
+    }
+  }
+
+  /**
    * Fetches commits from a clone-mode sandbox into the host repository.
    * @param {string} paneId
    */
@@ -658,5 +712,5 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     return { mappings, sandboxError };
   }
 
-  return { prepare, connect, shell, stop, destroy, forget, acknowledgeBridge, fetchChanges, describe, listAll };
+  return { prepare, connect, shell, stop, destroy, forget, acknowledgeBridge, releaseBridge, fetchChanges, describe, listAll };
 }
