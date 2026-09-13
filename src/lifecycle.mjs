@@ -58,13 +58,16 @@ export function bridgeIsRunning(entry) {
 
 /**
  * Whether a recorded process is alive, is the same incarnation that was
- * recorded (start token), and runs one of the given scripts for the pane.
+ * recorded (start token), and runs one of the given scripts for the pane. A
+ * live process whose command line cannot be read counts as the owner: the
+ * checks here decide whether a sandbox may be deleted, so they fail closed.
  * @param {{pid: unknown, token: string|null}} record
  * @param {string[]} scripts Script basenames one of which the command line must end a word with.
  * @param {string|null} paneId When given, the command line must carry `--pane-id <paneId>`.
+ * @param {string|null} mode When given, the command line must carry this word (the bridge mode).
  * @returns {boolean}
  */
-function processOwns(record, scripts, paneId = null) {
+function processOwns(record, scripts, paneId = null, mode = null) {
   const pid = Number(record?.pid);
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -91,6 +94,9 @@ function processOwns(record, scripts, paneId = null) {
   if (!words.some((word) => scripts.some((script) => word.endsWith(script)))) {
     return false;
   }
+  if (mode !== null && !words.includes(mode)) {
+    return false;
+  }
   if (paneId === null) {
     return true;
   }
@@ -108,7 +114,7 @@ function processOwns(record, scripts, paneId = null) {
  * @returns {Array<{pid: number, token?: string|null, since?: string, paneId?: string}>}
  */
 export function liveShells(entry) {
-  return (entry?.shellPids ?? []).filter((shell) => processOwns({ pid: shell.pid, token: shell.token ?? null }, ["bridge.mjs"], shell.paneId ?? entry?.paneId) && (processCommandLine(shell.pid) ?? "shell").includes(" shell "));
+  return (entry?.shellPids ?? []).filter((shell) => processOwns({ pid: shell.pid, token: shell.token ?? null }, ["bridge.mjs"], shell.paneId ?? entry?.paneId, "shell"));
 }
 
 /**

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
 import { CONFIG_DEFAULTS } from "../src/config.mjs";
-import { bridgeIsRunning, createLifecycle, deletionTargets, processCommandLine } from "../src/lifecycle.mjs";
+import { bridgeIsRunning, createLifecycle, deletionTargets, liveShells, processCommandLine, shellIsRunning } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
 import { deletePaneEntry, processStartToken } from "../src/state.mjs";
 import { PluginError } from "../src/errors.mjs";
@@ -337,4 +337,17 @@ test("a deletion claimed through one mapping blocks bridges and shells on anothe
   assert.equal(f.mappings().panes["pane-9"].bridgePid, process.pid, "a stale claim on the other mapping is ignored");
   assert.deepEqual(readdirSync(path.join(f.stateDir, "panes")).filter((name) => name.endsWith(".lock")), [], "no lock left behind");
   f.cleanup();
+});
+
+test("only a bridge running in shell mode counts as a live shell", () => {
+  const shell = fakeShellProcess("pane-1");
+  const agent = fakeBridgeProcess("pane-1");
+  try {
+    assert.deepEqual(liveShells({ paneId: "pane-1", shellPids: [{ pid: shell.pid }, { pid: agent.pid }, { pid: 2147483647 }] }).map((item) => item.pid), [shell.pid], "a connect bridge recorded as a shell is not a shell, a dead pid is nothing");
+    assert.equal(shellIsRunning({ paneId: "pane-2", shellPids: [{ pid: shell.pid, paneId: "pane-1" }] }), true, "the shell's own pane id is what counts after a move");
+    assert.equal(shellIsRunning({ paneId: "pane-2", shellPids: [{ pid: shell.pid }] }), false);
+  } finally {
+    shell.stop();
+    agent.stop();
+  }
 });
