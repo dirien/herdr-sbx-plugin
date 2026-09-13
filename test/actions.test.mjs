@@ -1187,3 +1187,15 @@ test("re-homing waits for the old pane's lock and gives up cleanly when it stays
   assert.ok(!f.herdrCalls().some((call) => call[1] === "run"), "no bridge was started");
   f.cleanup();
 });
+
+test("prune-mappings keeps a mapping whose bridge is still creating a sandbox that sbx does not list yet", () => {
+  const bridge = fakeBridgeProcess("wA:p1");
+  const f = createFixture({ panes: (p) => ({ "wA:p1": mappingFor({ worktree: p.worktree }, { paneId: "wA:p1", lifecycleState: "creating", bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }) }) });
+  const { result } = runAction(f, "prune-mappings", { env: { FAKE_HERDR_MISSING_PANES: "wA:p1" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.pruned, []);
+  assert.ok(result.kept.some((item) => item.paneId === "wA:p1" && /a bridge or a deletion still owns this mapping/.test(item.reason)), JSON.stringify(result.kept));
+  assert.deepEqual(Object.keys(f.mappings().panes), ["wA:p1"]);
+  bridge.stop();
+  f.cleanup();
+});

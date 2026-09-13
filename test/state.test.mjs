@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -149,4 +150,33 @@ test("updatePaneEntry reads and writes under the lock, so a concurrent bridge pi
     delete process.env.HERDR_SBX_LOCK_WAIT_MS;
   }
   assert.equal(getPaneEntry(stateDir, "pane-1").lifecycleState, "ready");
+});
+
+test("two contenders reclaiming the same stale lock never hold it at the same time", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  mkdirSync(path.dirname(lock), { recursive: true });
+  writeFileSync(lock, "2147483647\n");
+  const script = `
+    import { withPaneLock } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+    const [stateDir, paneId] = process.argv.slice(1);
+    const held = withPaneLock(stateDir, paneId, () => {
+      const start = Date.now();
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+      return [start, Date.now()];
+    });
+    process.stdout.write(JSON.stringify(held));
+  `;
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, "--", stateDir, "pane-1"], { encoding: "utf8" });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    child.on("exit", (code) => (code === 0 ? resolve(JSON.parse(out)) : reject(new Error(`exit ${code}: ${err}`))));
+  });
+  const [a, b] = await Promise.all([run(), run()]);
+  const overlap = Math.min(a[1], b[1]) - Math.max(a[0], b[0]);
+  assert.ok(overlap <= 0, `the two hold intervals overlap by ${overlap}ms: ${JSON.stringify([a, b])}`);
+  assert.ok(!existsSync(lock), "the lock is released at the end");
 });

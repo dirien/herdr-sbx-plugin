@@ -565,9 +565,20 @@ const ACTIONS = {
       const sandboxExists = trackedNames(entry).some((name) => live.has(name));
       if (!paneExists && !sandboxExists) {
         // The snapshot is older than two CLI calls; a mapping rewritten since (the
-        // pane id handed to a new sandbox) must not be pruned on stale data.
-        if (deletePaneEntryIfUnchanged(deps.pluginEnv.stateDir, entry.paneId, entry)) {
+        // pane id handed to a new sandbox) must not be pruned on stale data, and
+        // a mapping whose bridge is still creating its sandbox (not listed yet)
+        // or whose deletion is running is not garbage either.
+        const outcome = withPaneLock(deps.pluginEnv.stateDir, entry.paneId, () => {
+          const now = getPaneEntry(deps.pluginEnv.stateDir, entry.paneId);
+          if (now && (bridgeIsRunning(now) || deletionInProgress(now))) {
+            return "busy";
+          }
+          return deletePaneEntryIfUnchanged(deps.pluginEnv.stateDir, entry.paneId, entry) ? "pruned" : "changed";
+        });
+        if (outcome === "pruned") {
           pruned.push({ paneId: entry.paneId, sandboxName: entry.sandboxName });
+        } else if (outcome === "busy") {
+          kept.push({ paneId: entry.paneId, sandboxName: entry.sandboxName, reason: "a bridge or a deletion still owns this mapping" });
         } else {
           kept.push({ paneId: entry.paneId, sandboxName: entry.sandboxName, reason: "mapping changed while pruning; run prune-mappings again" });
         }

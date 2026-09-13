@@ -164,6 +164,43 @@ function sleepSync(ms) {
 }
 
 /**
+ * Takes a stale lock away with one atomic rename, so of several contenders
+ * that saw the same dead owner only one removes it and none can remove the
+ * fresh lock a faster contender created in the meantime.
+ * @param {string} lock
+ */
+function reclaimStaleLock(lock) {
+  const parked = `${lock}.stale-${process.pid}-${randomBytes(4).toString("hex")}`;
+  try {
+    renameSync(lock, parked);
+  } catch {
+    // Someone else reclaimed it first; the next attempt to create the lock decides.
+    return;
+  }
+  try {
+    unlinkSync(parked);
+  } catch {
+    // Left behind under a unique name; harmless.
+  }
+}
+
+/**
+ * Removes this process's lock, and only this process's: a lock reclaimed and
+ * re-created by someone else in the meantime is left alone.
+ * @param {string} lock
+ */
+function releaseLock(lock) {
+  try {
+    if (readFileSync(lock, "utf8").trim() !== String(process.pid)) {
+      return;
+    }
+    unlinkSync(lock);
+  } catch {
+    // Already gone; nothing to do.
+  }
+}
+
+/**
  * Runs `fn` while holding an exclusive lock on a pane's mapping, so a bridge
  * acknowledging itself and an action deleting the sandbox cannot interleave
  * their read-check-write sequences. The lock is a file created with O_EXCL
@@ -204,11 +241,7 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
         return fn();
       } finally {
         heldLocks.delete(lock);
-        try {
-          unlinkSync(lock);
-        } catch {
-          // Already broken by someone who thought we were gone; nothing to do.
-        }
+        releaseLock(lock);
       }
     }
     let owner = NaN;
@@ -221,11 +254,7 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
     }
     const stale = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : ageMs > waitMs;
     if (stale) {
-      try {
-        unlinkSync(lock);
-      } catch {
-        // Someone else broke it first.
-      }
+      reclaimStaleLock(lock);
       continue;
     }
     if (Date.now() >= deadline) {
