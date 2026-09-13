@@ -6,7 +6,8 @@ import { CONFIG_DEFAULTS } from "../src/config.mjs";
 import { bridgeIsRunning, createLifecycle, deletionTargets, processCommandLine } from "../src/lifecycle.mjs";
 import { createSbxClient } from "../src/sbx.mjs";
 import { deletePaneEntry } from "../src/state.mjs";
-import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, fakeBridgeProcess, mappingFor } from "./helpers.mjs";
+import { PluginError } from "../src/errors.mjs";
+import { FAKE_HERDR, FAKE_SBX, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, mappingFor } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -208,6 +209,46 @@ test("destroy refuses right before sbx rm when a bridge or an agent is active ag
   assert.throws(() => lifecycle.forget("pane-2"), (error) => error.errorKind === "conflict" && /running agent "claude" again/.test(error.message));
   assert.deepEqual(f.sbxCalls(), [], "no sbx rm ran");
   assert.deepEqual(Object.keys(f.mappings().panes).sort(), ["pane-1", "pane-2"]);
+  bridge.stop();
+  f.cleanup();
+});
+
+test("a deletion claims the mapping: no bridge acknowledges and no second deletion starts while it runs", () => {
+  const deleter = fakeActionProcess();
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", deletingPid: 2147483647, deletingSince: "2026-09-13T00:00:00.000Z" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.acknowledgeBridge("pane-1", "launch-1"), (error) => error.errorKind === "conflict" && /being deleted right now/.test(error.message));
+  assert.equal(f.mappings().panes["pane-1"].bridgePid, undefined, "nothing was recorded");
+  assert.throws(() => lifecycle.destroy("pane-1"), (error) => error.errorKind === "conflict" && /Another deletion/.test(error.message));
+  assert.deepEqual(f.sbxCalls(), []);
+  lifecycle.acknowledgeBridge("pane-2", "launch-2");
+  assert.equal(f.mappings().panes["pane-2"].bridgePid, process.pid, "a claim whose owner is gone is ignored");
+  deleter.stop();
+  f.cleanup();
+});
+
+test("destroy fails closed when Herdr cannot be asked, and looks again before every rm", () => {
+  const other = "herdr-codex-999999999999";
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }, { name: other, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { replacesSandboxNames: [other] }) }) });
+  const failing = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx: createSbxClient({ bin: FAKE_SBX, env: f.env() }), log: () => {}, herdr: { getPane: () => { throw new PluginError("unknown", "herdr pane get failed while reading the pane (exit 1)."); } } });
+  assert.throws(() => failing.destroy("pane-1"), (error) => /Could not confirm with Herdr/.test(error.message) && /Nothing was deleted/.test(error.message));
+  assert.deepEqual(f.sbxCalls(), [], "an unanswered safety check is not a green light");
+  assert.equal(f.mappings().panes["pane-1"].deletingPid, undefined, "the mapping was never claimed");
+
+  const bridge = fakeBridgeProcess("pane-1");
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env({ FAKE_SBX_RM_TOUCH_PANE: "pane-1", FAKE_SBX_RM_TOUCH_BRIDGE_PID: String(bridge.pid) }) });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {}, herdr: { getPane: () => null } });
+  assert.throws(() => lifecycle.destroy("pane-1"), (error) => error.errorKind === "conflict" && /still runs the bridge/.test(error.message));
+  assert.deepEqual(f.sbxCalls().filter((call) => call[0] === "rm").map((call) => call[2]), [NAME], "the predecessor was left alone once a bridge appeared");
+  const entry = f.mappings().panes["pane-1"];
+  assert.deepEqual(entry.deletedSandboxNames, [NAME]);
+  assert.equal(entry.lifecycleState, "missing");
+  assert.equal(entry.deletingPid, null, "the claim is released on failure");
+  assert.deepEqual(f.sbxSandboxes().map((item) => item.name), [other]);
   bridge.stop();
   f.cleanup();
 });

@@ -196,7 +196,20 @@ export function runEvent(fixture, eventName, payload, { env = {} } = {}) {
  * @returns {{pid: number, stop: () => void}}
  */
 export function fakeBridgeProcess(paneId) {
-  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", path.join("src", "bridge.mjs"), "connect", "--pane-id", paneId], { cwd: ROOT, stdio: "ignore" });
+  return fakeProcess([path.join("src", "bridge.mjs"), "connect", "--pane-id", paneId]);
+}
+
+/**
+ * Starts a process whose command line looks like a plugin action (it only
+ * sleeps), for tests that need a live deletion owner. Call `stop()` when done.
+ * @returns {{pid: number, stop: () => void}}
+ */
+export function fakeActionProcess() {
+  return fakeProcess([path.join("src", "action.mjs")]);
+}
+
+function fakeProcess(words) {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", ...words], { cwd: ROOT, stdio: "ignore" });
   child.unref();
   return { pid: /** @type {number} */ (child.pid), stop: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } } };
 }

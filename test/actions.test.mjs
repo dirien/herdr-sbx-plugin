@@ -7,7 +7,7 @@ import { parseResultLine } from "../src/result.mjs";
 import { bridgeStartTimeout, entryCwd, keepBranchCommand } from "../src/action-main.mjs";
 import path from "node:path";
 import { test } from "node:test";
-import { FAKE_HERDR, ROOT, createFixture, fakeBridgeProcess, git, mappingFor, runAction } from "./helpers.mjs";
+import { FAKE_HERDR, ROOT, createFixture, fakeActionProcess, fakeBridgeProcess, git, mappingFor, runAction } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -1136,4 +1136,19 @@ test("a sandbox whose agent reconnected while the deletion popup was open is not
     f.cleanup();
   }
   bridge.stop();
+});
+
+test("reconnect and the destructive actions refuse a mapping another process is deleting", () => {
+  const deleter = fakeActionProcess();
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }) }) });
+  for (const action of ["reconnect", "forget-mapping", "replace-sandbox"]) {
+    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed" } });
+    assert.equal(result.ok, false, action);
+    assert.equal(result.errorKind, "conflict", action);
+    assert.match(result.message, /being deleted right now \(pid \d+/, action);
+  }
+  assert.deepEqual(f.confirmations(), []);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"));
+  deleter.stop();
+  f.cleanup();
 });

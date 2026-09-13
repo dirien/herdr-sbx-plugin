@@ -5,7 +5,7 @@
  * @module state
  */
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { LIFECYCLE_STATES, PANES_DIR, STATE_VERSION } from "./constants.mjs";
 import { canonicalPath } from "./context.mjs";
@@ -124,6 +124,96 @@ export function updatePaneEntry(stateDir, paneId, patch) {
  * @param {string} paneId
  * @returns {boolean} Whether an entry existed.
  */
+/**
+ * Path of the lock file that serialises read-check-write sequences on a
+ * pane's mapping (next to the mapping, so it lives and dies with the state dir).
+ * @param {string} stateDir
+ * @param {string} paneId
+ * @returns {string}
+ */
+export function paneLockPath(stateDir, paneId) {
+  return `${paneEntryPath(stateDir, paneId)}.lock`;
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return /** @type {any} */ (error).code === "EPERM";
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Runs `fn` while holding an exclusive lock on a pane's mapping, so a bridge
+ * acknowledging itself and an action deleting the sandbox cannot interleave
+ * their read-check-write sequences. The lock is a file created with O_EXCL
+ * that holds the owner's pid; a lock whose owner is gone, or that stayed empty
+ * longer than the wait, is broken. Waits up to `waitMs` for a live owner.
+ * @template T
+ * @param {string} stateDir
+ * @param {string} paneId
+ * @param {() => T} fn
+ * @param {{waitMs?: number}} [options]
+ * @returns {T}
+ */
+export function withPaneLock(stateDir, paneId, fn, { waitMs = 5000 } = {}) {
+  const lock = paneLockPath(stateDir, paneId);
+  mkdirSync(path.dirname(lock), { recursive: true });
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    let fd = null;
+    try {
+      fd = openSync(lock, "wx");
+    } catch (error) {
+      if (/** @type {any} */ (error).code !== "EEXIST") {
+        throw new PluginError("startup", `Could not lock ${lock}: ${/** @type {any} */ (error).message}`, { cause: error });
+      }
+    }
+    if (fd !== null) {
+      try {
+        writeFileSync(fd, `${process.pid}\n`);
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        return fn();
+      } finally {
+        try {
+          unlinkSync(lock);
+        } catch {
+          // Already broken by someone who thought we were gone; nothing to do.
+        }
+      }
+    }
+    let owner = NaN;
+    let ageMs = 0;
+    try {
+      owner = Number(readFileSync(lock, "utf8").trim());
+      ageMs = Date.now() - statSync(lock).mtimeMs;
+    } catch {
+      // Being written or removed right now; look again.
+    }
+    const stale = Number.isInteger(owner) && owner > 0 ? !processAlive(owner) : ageMs > waitMs;
+    if (stale) {
+      try {
+        unlinkSync(lock);
+      } catch {
+        // Someone else broke it first.
+      }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new PluginError("conflict", `The mapping of pane ${paneId} is locked by process ${Number.isInteger(owner) && owner > 0 ? owner : "unknown"}; try again in a moment.`);
+    }
+    sleepSync(20);
+  }
+}
+
 /**
  * Removes the entry for a pane only if it is still the one the caller read
  * (same `revision` and `updatedAt`), so a mapping rewritten in the meantime

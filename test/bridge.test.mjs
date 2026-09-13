@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
 import { parseBridgeArgs } from "../src/bridge-main.mjs";
-import { FAKE_SBX, createFixture, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
+import { FAKE_SBX, createFixture, fakeActionProcess, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -271,5 +271,16 @@ test("the bridge gives the mapping back when it exits, so a recycled pid can nev
   assert.equal(entry.bridgePid, null);
   assert.ok(entry.bridgeExitedAt, "exit is recorded");
   assert.equal(entry.bridgeLaunchId, "abc123", "the acknowledgement itself is kept for the action that waited on it");
+  f.cleanup();
+});
+
+test("the bridge does not attach while an action is deleting the mapping's sandboxes", () => {
+  const deleter = fakeActionProcess();
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }) }) });
+  const { status, stdout } = runBridge(f, "connect", "pane-1");
+  assert.equal(status, 1);
+  assert.match(stdout, /being deleted right now/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "exec"), "no attach happened");
+  deleter.stop();
   f.cleanup();
 });

@@ -17,7 +17,7 @@ import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { sandboxGitRemote } from "./naming.mjs";
 import { buildCreateArgs, buildExecArgs, classifyFailure, createSbxClient } from "./sbx.mjs";
 import { shellQuote } from "./shell.mjs";
-import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneEntry } from "./state.mjs";
+import { deletePaneEntry, getPaneEntry, loadState, requirePaneEntry, updatePaneEntry, withPaneLock } from "./state.mjs";
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
@@ -72,6 +72,30 @@ export function bridgeIsRunning(entry) {
   const runsBridge = words.some((word) => word.endsWith("bridge.mjs"));
   const paneIndex = words.indexOf("--pane-id");
   return runsBridge && paneIndex !== -1 && words[paneIndex + 1] === String(entry.paneId ?? "");
+}
+
+/**
+ * Whether an action or hook is deleting this mapping's sandboxes right now:
+ * `destroy` records its pid while it works, and the record counts only while
+ * that process is alive and really is a plugin action or event hook.
+ * @param {{deletingPid?: number|null}} entry
+ * @returns {boolean}
+ */
+export function deletionInProgress(entry) {
+  const pid = Number(entry?.deletingPid);
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  const commandLine = processCommandLine(pid);
+  if (commandLine === null) {
+    return true;
+  }
+  return commandLine.split(/\s+/).some((word) => word.endsWith("action.mjs") || word.endsWith("events.mjs"));
 }
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
@@ -408,60 +432,90 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {{expectedNames?: string[]|null}} [options]
    */
   function destroy(paneId, { expectedNames = null } = {}) {
-    const entry = requirePaneEntry(stateDir, paneId);
     // The confirmation popup may have stayed open for a minute, long enough for
     // reconnect to attach an agent again. This is the one place every sbx rm
-    // passes through, so the mapping is re-read and re-checked here, not only
-    // before the popup.
-    if (bridgeIsRunning(entry)) {
-      throw new PluginError("conflict", `Pane ${paneId} still runs the bridge for ${entry.sandboxName} (pid ${entry.bridgePid}, since ${entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Nothing was deleted.`);
-    }
-    if (typeof herdr?.getPane === "function") {
-      let agent = null;
-      try {
-        agent = herdr.getPane(paneId)?.agent ?? null;
-      } catch (error) {
-        log(`Could not ask Herdr about pane ${paneId} before deleting: ${errorMessageOf(error)}`);
+    // passes through, so the mapping is re-read and re-checked here under the
+    // mapping lock, and the deletion claims the mapping so no bridge can
+    // acknowledge itself until it is over.
+    const entry = withPaneLock(stateDir, paneId, () => {
+      const current = requirePaneEntry(stateDir, paneId);
+      assertNotBusy(paneId, current);
+      if (deletionInProgress(current) && current.deletingPid !== process.pid) {
+        throw new PluginError("conflict", `Another deletion of pane ${paneId}'s sandboxes is in progress (pid ${current.deletingPid}). Nothing was deleted.`);
       }
-      if (agent) {
-        throw new PluginError("conflict", `Pane ${paneId} is running agent "${agent}" again. Nothing was deleted; exit the agent and try again.`);
-      }
-    }
+      return updatePaneEntry(stateDir, paneId, { deletingPid: process.pid, deletingSince: new Date().toISOString() });
+    });
     const names = deletionTargets(entry);
-    if (expectedNames) {
-      const current = [...names].sort();
-      const expected = [...new Set(expectedNames)].filter(Boolean).sort();
-      if (current.join("\n") !== expected.join("\n")) {
-        throw new PluginError("conflict", `The mapping of pane ${paneId} changed while the confirmation was open (now ${current.join(", ") || "nothing"}, confirmed ${expected.join(", ") || "nothing"}). Nothing was deleted; run the action again.`);
-      }
-    }
     const alreadyDeleted = new Set(entry.deletedSandboxNames ?? []);
     const deleted = [];
     const missing = [];
-    for (const name of names) {
-      try {
-        sbx.runChecked(["rm", "--force", name], `deleting sandbox ${name}`);
-        deleted.push(name);
-        log(`Deleted sandbox ${name}.`);
-      } catch (error) {
-        try {
-          if (errorKindOf(error) === "not-found") {
-            confirmGone(name, error);
-            missing.push(name);
-            log(`Sandbox ${name} was already gone.`);
-            continue;
-          }
-          throw error;
-        } catch (failure) {
-          // The mapping's own sandbox may already be gone even though a predecessor is not.
-          const ownGone = deleted.includes(entry.sandboxName) || missing.includes(entry.sandboxName);
-          updatePaneEntry(stateDir, paneId, { ...(ownGone ? { lifecycleState: "missing" } : {}), deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: describeError(failure) });
-          throw failure;
+    try {
+      if (expectedNames) {
+        const current = [...names].sort();
+        const expected = [...new Set(expectedNames)].filter(Boolean).sort();
+        if (current.join("\n") !== expected.join("\n")) {
+          throw new PluginError("conflict", `The mapping of pane ${paneId} changed while the confirmation was open (now ${current.join(", ") || "nothing"}, confirmed ${expected.join(", ") || "nothing"}). Nothing was deleted; run the action again.`);
         }
       }
+      for (const name of names) {
+        // Every rm can take a while; look again right before each one.
+        withPaneLock(stateDir, paneId, () => {
+          const now = requirePaneEntry(stateDir, paneId);
+          if (now.deletingPid !== process.pid) {
+            throw new PluginError("conflict", `The deletion of pane ${paneId}'s sandboxes was taken over by process ${now.deletingPid ?? "unknown"}; stopping here.`);
+          }
+          assertNotBusy(paneId, now);
+        });
+        try {
+          sbx.runChecked(["rm", "--force", name], `deleting sandbox ${name}`);
+          deleted.push(name);
+          log(`Deleted sandbox ${name}.`);
+        } catch (error) {
+          if (errorKindOf(error) !== "not-found") {
+            throw error;
+          }
+          confirmGone(name, error);
+          missing.push(name);
+          log(`Sandbox ${name} was already gone.`);
+        }
+      }
+    } catch (failure) {
+      // The mapping's own sandbox may already be gone even though a predecessor is not.
+      const ownGone = deleted.includes(entry.sandboxName) || missing.includes(entry.sandboxName);
+      try {
+        updatePaneEntry(stateDir, paneId, { ...(ownGone ? { lifecycleState: "missing" } : {}), deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: describeError(failure), deletingPid: null, deletingSince: null });
+      } catch (error) {
+        log(`Could not record the failed deletion for pane ${paneId}: ${errorMessageOf(error)}`);
+      }
+      throw failure;
     }
-    updatePaneEntry(stateDir, paneId, { lifecycleState: "missing", deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: null });
+    updatePaneEntry(stateDir, paneId, { lifecycleState: "missing", deletedSandboxNames: [...alreadyDeleted, ...deleted, ...missing], lastError: null, deletingPid: null, deletingSince: null });
     return { deleted, missing };
+  }
+
+  /**
+   * Throws when the mapping's sandbox is in use: its bridge process is alive,
+   * or Herdr reports an agent in the pane. When Herdr cannot be asked, that is
+   * a failure too, not a green light.
+   * @param {string} paneId
+   * @param {Record<string, any>} entry
+   */
+  function assertNotBusy(paneId, entry) {
+    if (bridgeIsRunning(entry)) {
+      throw new PluginError("conflict", `Pane ${paneId} still runs the bridge for ${entry.sandboxName} (pid ${entry.bridgePid}, since ${entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Nothing was deleted.`);
+    }
+    if (typeof herdr?.getPane !== "function") {
+      return;
+    }
+    let agent = null;
+    try {
+      agent = herdr.getPane(paneId)?.agent ?? null;
+    } catch (error) {
+      throw new PluginError(errorKindOf(error) === "unknown" ? "unknown" : errorKindOf(error), `Could not confirm with Herdr that pane ${paneId} runs no agent (${errorMessageOf(error)}). Nothing was deleted; try again.`, { output: /** @type {any} */ (error)?.output, cause: error });
+    }
+    if (agent) {
+      throw new PluginError("conflict", `Pane ${paneId} is running agent "${agent}" again. Nothing was deleted; exit the agent and try again.`);
+    }
   }
 
   /**
@@ -503,7 +557,13 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string|null} [launchId]
    */
   function acknowledgeBridge(paneId, launchId = null) {
-    updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid });
+    withPaneLock(stateDir, paneId, () => {
+      const entry = requirePaneEntry(stateDir, paneId);
+      if (deletionInProgress(entry)) {
+        throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not attaching.`);
+      }
+      updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid });
+    });
   }
 
   /**

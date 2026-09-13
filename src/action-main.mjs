@@ -15,7 +15,7 @@ import { BRIDGE_START_TIMEOUT_ENV, BRIDGE_START_TIMEOUT_MS, CONFIRMATION_TIMEOUT
 import { isInside, readContext, readPluginEnv, requirePluginDirs, resolveMountRoot, resolvePaneId, resolveWorkdir } from "./context.mjs";
 import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { createHerdrClient } from "./herdr.mjs";
-import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, bridgeIsRunning, createLifecycle, deletionTargets } from "./lifecycle.mjs";
+import { CONNECTABLE_STATES, agentForEntry, assertMountRoot, bridgeIsRunning, createLifecycle, deletionInProgress, deletionTargets } from "./lifecycle.mjs";
 import { hyperlink, parseSandboxPortUrl, sandboxPortUrl } from "./links.mjs";
 import { sandboxNameFor } from "./naming.mjs";
 import { openUrl } from "./open.mjs";
@@ -103,6 +103,9 @@ function refuseWhileAgentRuns(deps, target, verb) {
   // whether or not Herdr can see an agent in the pane yet.
   if (bridgeIsRunning(target.entry)) {
     throw new PluginError("conflict", `Pane ${target.paneId} still runs the bridge for ${target.entry.sandboxName} (pid ${target.entry.bridgePid}, since ${target.entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Exit it before you ${verb}.`);
+  }
+  if (deletionInProgress(target.entry)) {
+    throw new PluginError("conflict", `The sandboxes of pane ${target.paneId} are being deleted right now (pid ${target.entry.deletingPid}, since ${target.entry.deletingSince}). Wait for that to finish before you ${verb}.`);
   }
   const agent = target.viaWorkspace ? deps.herdr.getPane(target.paneId)?.agent ?? null : deps.context.focused_pane_agent ?? null;
   if (agent) {

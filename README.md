@@ -370,7 +370,7 @@ CLI `output` trimmed to 4000 characters when there was any:
 | `not-found` | The sandbox no longer exists, or for `fetch-changes` the mounted directory is not a git repository. `stop` and a failed attach mark the mapping `missing`. |
 | `daemon` | `sandboxd` is not running or unreachable, or a captured `sbx` call was killed after its timeout. |
 | `authentication` | `sbx` wants you to run `sbx login`. |
-| `conflict` | The bridge process for the mapping is still running (preparing the sandbox or attached to the agent), Herdr still detects an agent in the pane, `sbx` reported a name clash, or a mapping changed while a confirmation popup was open. |
+| `conflict` | The bridge process for the mapping is still running (preparing the sandbox or attached to the agent), Herdr still detects an agent in the pane, another action is deleting the mapping's sandboxes right now, `sbx` reported a name clash, or a mapping changed while a confirmation popup was open. |
 | `network` | Classified from the `sbx` output, or `git fetch` could not reach the sandbox remote. |
 | `permission` | Classified from the `sbx` output. |
 | `cancelled` | The confirmation popup was declined, interrupted or timed out. |

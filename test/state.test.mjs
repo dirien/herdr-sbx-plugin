@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, requirePaneEntry, savePaneEntry, updatePaneEntry } from "../src/state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, paneLockPath, requirePaneEntry, savePaneEntry, updatePaneEntry, withPaneLock } from "../src/state.mjs";
 
 function freshDir() {
   return mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
@@ -99,4 +99,23 @@ test("deletePaneEntryIfUnchanged only removes the entry the caller read", () => 
   assert.equal(deletePaneEntryIfUnchanged(stateDir, "pane-1", current), true);
   assert.equal(getPaneEntry(stateDir, "pane-1"), null);
   assert.equal(deletePaneEntryIfUnchanged(stateDir, "pane-1", current), false, "already gone");
+});
+
+test("withPaneLock runs the callback under a lock file, breaks stale locks and gives up on a live one", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  assert.equal(withPaneLock(stateDir, "pane-1", () => {
+    assert.ok(existsSync(lock), "held while the callback runs");
+    return 42;
+  }), 42);
+  assert.ok(!existsSync(lock), "released afterwards");
+  assert.throws(() => withPaneLock(stateDir, "pane-1", () => { throw new Error("boom"); }), /boom/);
+  assert.ok(!existsSync(lock), "released after a throw too");
+  writeFileSync(lock, "2147483647\n");
+  assert.equal(withPaneLock(stateDir, "pane-1", () => "broke the stale lock"), "broke the stale lock", "a lock whose owner is gone is taken over");
+  writeFileSync(lock, `${process.pid}\n`);
+  const started = Date.now();
+  assert.throws(() => withPaneLock(stateDir, "pane-1", () => "never", { waitMs: 150 }), (error) => error.errorKind === "conflict" && /locked by process/.test(error.message));
+  assert.ok(Date.now() - started >= 150, "waited for the live owner before giving up");
+  assert.ok(existsSync(lock), "a live owner's lock is left alone");
 });

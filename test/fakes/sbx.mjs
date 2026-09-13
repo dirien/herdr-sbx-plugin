@@ -162,6 +162,11 @@ switch (subcommand) {
       if (index === -1) fail("not-found", name);
       state.sandboxes.splice(index, 1);
       process.stdout.write(`Removed ${name}\n`);
+      if (process.env.FAKE_SBX_RM_TOUCH_PANE && process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID && process.env.HERDR_PLUGIN_STATE_DIR) {
+        // Emulate a bridge that attached between two deletions of the same mapping.
+        const touched = getPaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_RM_TOUCH_PANE);
+        if (touched) savePaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_SBX_RM_TOUCH_PANE, { ...touched, bridgePid: Number(process.env.FAKE_SBX_RM_TOUCH_BRIDGE_PID), bridgeStartedAt: new Date().toISOString() });
+      }
     }
     saveState(state);
     break;
