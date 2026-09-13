@@ -136,3 +136,17 @@ test("the mapping lock is re-entrant and every writer and deleter takes it", () 
   assert.throws(() => deletePaneEntryIfUnchanged(stateDir, "pane-1", seen), (error) => error.errorKind === "conflict");
   assert.equal(getPaneEntry(stateDir, "pane-1").sandboxName, "herdr-x-1", "nothing changed while the lock was foreign");
 });
+
+test("updatePaneEntry reads and writes under the lock, so a concurrent bridge pid is never overwritten", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  savePaneEntry(stateDir, "pane-1", { sandboxName: "herdr-x-1", localPath: "/w", workdir: "/w", agentKind: "claude-code", workspaceMode: "mount", lifecycleState: "ready" });
+  writeFileSync(lock, `${process.pid}\n`);
+  process.env.HERDR_SBX_LOCK_WAIT_MS = "150";
+  try {
+    assert.throws(() => updatePaneEntry(stateDir, "pane-1", { lifecycleState: "stopped" }), (error) => error.errorKind === "conflict", "the read waits for the lock, not only the write");
+  } finally {
+    delete process.env.HERDR_SBX_LOCK_WAIT_MS;
+  }
+  assert.equal(getPaneEntry(stateDir, "pane-1").lifecycleState, "ready");
+});

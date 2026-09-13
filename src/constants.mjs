@@ -45,6 +45,12 @@ export const BRIDGE_START_TIMEOUT_ENV = "HERDR_SBX_BRIDGE_START_TIMEOUT_MS";
 /** Environment variable that shortens the confirmation timeout (milliseconds); used by tests. */
 export const CONFIRMATION_TIMEOUT_ENV = "HERDR_SBX_CONFIRMATION_TIMEOUT_MS";
 
+/** How long a process waits for another live process to release a mapping lock. */
+export const LOCK_WAIT_MS = 5000;
+
+/** Environment variable overriding {@link LOCK_WAIT_MS} (milliseconds); used by tests. */
+export const LOCK_WAIT_ENV = "HERDR_SBX_LOCK_WAIT_MS";
+
 /** How long the key binding installer may take, including Herdr's config check and reload. */
 export const KEYBINDING_INSTALL_TIMEOUT_MS = 30_000;
 

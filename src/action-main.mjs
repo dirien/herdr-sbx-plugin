@@ -22,7 +22,7 @@ import { openUrl } from "./open.mjs";
 import { emitResult, failurePayload } from "./result.mjs";
 import { createSbxClient } from "./sbx.mjs";
 import { buildPaneCommand, shellQuote } from "./shell.mjs";
-import { deletePaneEntry, deletePaneEntryIfUnchanged, getPaneEntry, loadState, savePaneEntry } from "./state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, getPaneEntry, loadState, savePaneEntry, withPaneLock } from "./state.mjs";
 
 /**
  * Builds the command typed into a pane to run the bridge.
@@ -280,39 +280,64 @@ function openAgentPane(deps, { anchorPaneId, cwd, label }) {
  * @returns {string|null}
  */
 function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
+  const stateDir = deps.pluginEnv.stateDir;
+  const oldPaneId = target.entry.paneId;
   const focused = resolvePaneId(deps.context, deps.env);
   const cwd = entryCwd(target.entry);
   const paneId = openAgentPane(deps, { anchorPaneId: focused, cwd, label });
-  if (paneId !== target.entry.paneId && abandonIf && abandonIf()) {
+  const closeSpare = () => {
     try {
       deps.herdr.closePane(paneId);
     } catch (error) {
       process.stderr.write(`could not close the unused pane ${paneId}: ${errorMessageOf(error)}\n`);
     }
+  };
+  if (paneId !== oldPaneId && abandonIf && abandonIf()) {
+    closeSpare();
     return null;
   }
-  const moved = { ...target.entry, workspaceId: workspaceOf(deps), sourcePaneId: focused, adoptedFrom: target.entry.paneId };
-  // Herdr may hand out an id that another mapping still uses; keep that mapping's sandboxes deletable.
-  const displaced = paneId !== target.entry.paneId ? getPaneEntry(deps.pluginEnv.stateDir, paneId) : null;
-  if (displaced) {
-    moved.replacesSandboxNames = [...new Set([...(moved.replacesSandboxNames ?? []), ...trackedNames(displaced)])];
-    moved.deletedSandboxNames = [...new Set([...(moved.deletedSandboxNames ?? []), ...(displaced.deletedSandboxNames ?? [])])];
-    process.stderr.write(`pane ${paneId} was mapped to ${displaced.sandboxName}; it stays deletable through the adopted mapping\n`);
+  let moved;
+  try {
+    // The move is decided and written under the old pane's lock: a bridge
+    // acknowledging itself or a deletion claiming the mapping waits for it, and
+    // whatever happened before is visible in the re-read entry.
+    moved = withPaneLock(stateDir, oldPaneId, () => {
+      const latest = getPaneEntry(stateDir, oldPaneId);
+      if (!latest) {
+        throw new PluginError("conflict", `The mapping of pane ${oldPaneId} disappeared while a new pane was being opened for it; nothing was moved.`);
+      }
+      if (paneId !== oldPaneId && abandonIf && abandonIf()) {
+        return null;
+      }
+      if (bridgeIsRunning(latest) || deletionInProgress(latest)) {
+        throw new PluginError("conflict", `The mapping of pane ${oldPaneId} is in use again (bridge ${latest.bridgePid ?? "none"}, deletion ${latest.deletingPid ?? "none"}); nothing was moved.`);
+      }
+      const next = { ...latest, workspaceId: workspaceOf(deps), sourcePaneId: focused, adoptedFrom: oldPaneId };
+      if (paneId === oldPaneId) {
+        // Herdr handed out the orphan's own id again; the saved entry is the one to keep.
+        savePaneEntry(stateDir, paneId, next);
+        return next;
+      }
+      // Herdr may hand out an id that another mapping still uses; keep that mapping's sandboxes deletable.
+      withPaneLock(stateDir, paneId, () => {
+        const displaced = getPaneEntry(stateDir, paneId);
+        if (displaced) {
+          next.replacesSandboxNames = [...new Set([...(next.replacesSandboxNames ?? []), ...trackedNames(displaced)])];
+          next.deletedSandboxNames = [...new Set([...(next.deletedSandboxNames ?? []), ...(displaced.deletedSandboxNames ?? [])])];
+          process.stderr.write(`pane ${paneId} was mapped to ${displaced.sandboxName}; it stays deletable through the adopted mapping\n`);
+        }
+        savePaneEntry(stateDir, paneId, next);
+      });
+      deletePaneEntry(stateDir, oldPaneId);
+      return next;
+    });
+  } catch (error) {
+    closeSpare();
+    throw error;
   }
-  if (paneId !== target.entry.paneId && abandonIf && abandonIf()) {
-    // Checked again right before the move is written, so the window in which a
-    // late acknowledgement can be lost is the two file writes below.
-    try {
-      deps.herdr.closePane(paneId);
-    } catch (error) {
-      process.stderr.write(`could not close the unused pane ${paneId}: ${errorMessageOf(error)}\n`);
-    }
+  if (moved === null) {
+    closeSpare();
     return null;
-  }
-  savePaneEntry(deps.pluginEnv.stateDir, paneId, moved);
-  // Herdr may hand out the orphan's own id again; then the saved entry is the one to keep.
-  if (paneId !== target.entry.paneId) {
-    deletePaneEntry(deps.pluginEnv.stateDir, target.entry.paneId);
   }
   return paneId;
 }

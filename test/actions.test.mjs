@@ -1174,3 +1174,16 @@ test("an orphan whose bridge or deletion is still running is refused before it i
   busy.cleanup();
   deleting.cleanup();
 });
+
+test("re-homing waits for the old pane's lock and gives up cleanly when it stays held", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "wC:p2": mappingFor({ worktree: p.worktree }, { paneId: "wC:p2", workspaceId: "wC" }) }) });
+  writeFileSync(`${path.join(f.stateDir, "panes")}/${readdirSync(path.join(f.stateDir, "panes")).find((name) => name.endsWith(".json"))}.lock`, `${process.pid}\n`);
+  const { result } = runAction(f, "reconnect", { context: { focused_pane_id: "wP:p1", workspace_id: "wP" }, env: { FAKE_HERDR_MISSING_PANES: "wC:p2", HERDR_SBX_LOCK_WAIT_MS: "200" } });
+  assert.equal(result.ok, false);
+  assert.equal(result.errorKind, "conflict");
+  assert.match(result.message, /locked by process/);
+  assert.deepEqual(Object.keys(f.mappings().panes), ["wC:p2"], "the mapping stayed where it was");
+  assert.ok(f.herdrCalls().some((call) => call[1] === "close"), "the pane opened for the move was closed again");
+  assert.ok(!f.herdrCalls().some((call) => call[1] === "run"), "no bridge was started");
+  f.cleanup();
+});

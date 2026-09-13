@@ -380,7 +380,8 @@ CLI `output` trimmed to 4000 characters when there was any:
 | `unknown` | Anything else; the captured CLI output is included. |
 
 Set `HERDR_SBX_CONFIRMATION_TIMEOUT_MS` to shorten the 60 second confirmation
-window when testing orchestration. Captured `sbx` calls are killed after two
+window when testing orchestration, and `HERDR_SBX_LOCK_WAIT_MS` to shorten the
+five seconds an action waits for another process to release a mapping. Captured `sbx` calls are killed after two
 minutes and reported as `daemon` failures, so a wedged daemon cannot hang an
 action; the host-side `git fetch` of `fetch-changes` has the same limit and
 reports a timeout as `network`. `sbx create` and setup scripts get thirty

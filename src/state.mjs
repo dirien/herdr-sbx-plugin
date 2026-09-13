@@ -7,7 +7,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { LIFECYCLE_STATES, PANES_DIR, STATE_VERSION } from "./constants.mjs";
+import { LIFECYCLE_STATES, LOCK_WAIT_ENV, LOCK_WAIT_MS, PANES_DIR, STATE_VERSION } from "./constants.mjs";
 import { canonicalPath } from "./context.mjs";
 import { PluginError } from "./errors.mjs";
 
@@ -116,8 +116,12 @@ export function savePaneEntry(stateDir, paneId, entry) {
  * @returns {Record<string, any>} The stored entry.
  */
 export function updatePaneEntry(stateDir, paneId, patch) {
-  const current = requirePaneEntry(stateDir, paneId);
-  return savePaneEntry(stateDir, paneId, { ...current, ...patch });
+  // Read, merge and write under one lock, or a concurrent writer's fields (a
+  // bridge's pid, a deletion claim) would be overwritten with a stale copy.
+  return withPaneLock(stateDir, paneId, () => {
+    const current = requirePaneEntry(stateDir, paneId);
+    return savePaneEntry(stateDir, paneId, { ...current, ...patch });
+  });
 }
 
 /**
@@ -139,6 +143,12 @@ export function paneLockPath(stateDir, paneId) {
 
 /** Lock files this process holds right now, so nested sections do not wait for themselves. */
 const heldLocks = new Set();
+
+/** How long a caller waits for a live lock owner: {@link LOCK_WAIT_MS} unless {@link LOCK_WAIT_ENV} overrides it. */
+function defaultLockWaitMs() {
+  const raw = Number(process.env[LOCK_WAIT_ENV]);
+  return Number.isFinite(raw) && raw > 0 ? raw : LOCK_WAIT_MS;
+}
 
 function processAlive(pid) {
   try {
@@ -166,7 +176,7 @@ function sleepSync(ms) {
  * @param {{waitMs?: number}} [options]
  * @returns {T}
  */
-export function withPaneLock(stateDir, paneId, fn, { waitMs = 5000 } = {}) {
+export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs() } = {}) {
   const lock = paneLockPath(stateDir, paneId);
   if (heldLocks.has(lock)) {
     // Re-entrant within one process: a save inside a locked section must not wait for itself.
