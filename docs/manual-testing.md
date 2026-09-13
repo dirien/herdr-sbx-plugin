@@ -45,8 +45,8 @@ sbx policy init balanced
 If `sbx secret ls` is empty:
 
 ```bash
-echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic   # Claude Code
-sbx secret set github --command 'gh auth token'        # optional, for git pushes from the VM
+sbx secret set anthropic                          # Claude Code with an API key; a subscription uses /login inside Claude Code
+sbx secret set github --command 'gh auth token'  # optional, for git pushes from the VM
 ```
 
 Create a throwaway repository to use as the workspace:

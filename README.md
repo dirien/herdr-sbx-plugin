@@ -79,13 +79,14 @@ herdr plugin link "$PWD"
 
 ## First run
 
-1. Give the agent a credential. `sbx` keeps it outside the VM and injects it
-   per request, and the `balanced` preset already allows the model provider
-   APIs. Skip this if you sign in to Claude interactively; the agent then asks
-   on its first start.
+1. Give the agent a credential. With an Anthropic API key, store it with
+   `sbx`: it stays in your OS keychain, the proxy on the host injects it per
+   request, and the `balanced` preset already allows the model provider APIs.
+   With a Claude subscription, skip this and run `/login` inside Claude Code
+   the first time; that token stays on the host too.
 
    ```bash
-   echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic
+   sbx secret set anthropic    # prompts for the key
    ```
 
 2. Add the key bindings. This appends four `[[keys.command]]` entries to
@@ -303,20 +304,29 @@ refs disappear with the sandbox, so keep work before `forget-mapping` or
 
 The plugin never reads or stores tokens itself. The `env`, `envFiles` and
 `agentEnv` keys do forward host values into the VM, so keep API keys out of
-them and register them with `sbx` instead; the proxy injects them per request:
+them and register them with `sbx` instead. A stored secret lives in your OS
+keychain, and the proxy on the host rewrites the auth header on the way out;
+the VM only ever sees a placeholder value.
 
 ```bash
-echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic
-sbx secret set github --command 'gh auth token'
-sbx policy allow network registry.npmjs.org,api.github.com
+sbx secret set anthropic                            # prompts for the key
+echo "$ANTHROPIC_API_KEY" | sbx secret set anthropic  # the same, for scripts
+sbx secret import                                   # or take keys already in your shell
+sbx secret set github --command 'gh auth token'    # resolved on the host when needed
 ```
 
+Claude Code, Codex and Cursor can sign in with OAuth instead (`/login` inside
+Claude Code, `sbx secret set openai --oauth` for Codex); an API key wins when
+both exist. A global secret applies to sandboxes created after it was set, so
+store it before `start-agent`, or run `replace-sandbox` afterwards;
+`sbx secret set anthropic --sandbox <name>` changes a running sandbox at once.
+
 The network preset you chose with `sbx policy init` decides what the VM may
-reach: `balanced` allows model provider APIs, package registries and code
-hosts and blocks the rest, `deny-all` blocks everything until you allow it. If
-an agent needs another host, allow it with `sbx policy allow network`, bake
-the rule into a kit, or add `denyNetwork` rules for hosts that must stay
-unreachable.
+reach: `balanced` allows model provider APIs, package registries, code hosts
+and container registries and blocks the rest, `deny-all` blocks everything
+until you allow it. If an agent needs another host, allow it with
+`sbx policy allow network internal.example.com`, bake the rule into a kit, or
+add `denyNetwork` rules for hosts that must stay unreachable.
 
 ### Ports and the overlay
 
