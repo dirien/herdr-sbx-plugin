@@ -96,9 +96,8 @@ function requireFocusedMapping(deps) {
 }
 
 function refuseWhileAgentRuns(deps, target, verb) {
-  if (target.orphan) {
-    return;
-  }
+  // Process ownership is checked for every target, orphan or not: a pane Herdr
+  // no longer knows proves nothing about the bridge process or a running deletion.
   // A live bridge means the sandbox is being prepared or the agent is attached,
   // whether or not Herdr can see an agent in the pane yet.
   if (bridgeIsRunning(target.entry)) {
@@ -106,6 +105,10 @@ function refuseWhileAgentRuns(deps, target, verb) {
   }
   if (deletionInProgress(target.entry)) {
     throw new PluginError("conflict", `The sandboxes of pane ${target.paneId} are being deleted right now (pid ${target.entry.deletingPid}, since ${target.entry.deletingSince}). Wait for that to finish before you ${verb}.`);
+  }
+  if (target.orphan) {
+    // Only Herdr's own record of the pane is unavailable for an orphan.
+    return;
   }
   const agent = target.viaWorkspace ? deps.herdr.getPane(target.paneId)?.agent ?? null : deps.context.focused_pane_agent ?? null;
   if (agent) {

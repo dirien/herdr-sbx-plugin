@@ -1152,3 +1152,25 @@ test("reconnect and the destructive actions refuse a mapping another process is 
   deleter.stop();
   f.cleanup();
 });
+
+test("an orphan whose bridge or deletion is still running is refused before it is re-homed", () => {
+  const bridge = fakeBridgeProcess("wC:p2");
+  const busy = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "wC:p2": mappingFor({ worktree: p.worktree }, { paneId: "wC:p2", workspaceId: "wC", bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }) }) });
+  const attached = runAction(busy, "reconnect", { context: { focused_pane_id: "wP:p1", workspace_id: "wP" }, env: { FAKE_HERDR_MISSING_PANES: "wC:p2" } });
+  assert.equal(attached.result.errorKind, "conflict", JSON.stringify(attached.result));
+  assert.match(attached.result.message, /still runs the bridge/);
+  assert.deepEqual(Object.keys(busy.mappings().panes), ["wC:p2"], "the mapping was not moved");
+  bridge.stop();
+  const deleter = fakeActionProcess();
+  const deleting = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "wC:p2": mappingFor({ worktree: p.worktree }, { paneId: "wC:p2", workspaceId: "wC", deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }) }) });
+  for (const action of ["reconnect", "replace-sandbox"]) {
+    const { result } = runAction(deleting, action, { context: { focused_pane_id: "wP:p1", workspace_id: "wP" }, env: { FAKE_HERDR_MISSING_PANES: "wC:p2", FAKE_POPUP_DECISION: "confirmed" } });
+    assert.equal(result.errorKind, "conflict", action);
+    assert.match(result.message, /being deleted right now/, action);
+  }
+  assert.deepEqual(Object.keys(deleting.mappings().panes), ["wC:p2"]);
+  assert.ok(!deleting.herdrCalls().some((call) => call[1] === "split"), "no replacement pane was opened");
+  deleter.stop();
+  busy.cleanup();
+  deleting.cleanup();
+});

@@ -102,7 +102,9 @@ export function savePaneEntry(stateDir, paneId, entry) {
   }
   // `revision` changes on every save, unlike `updatedAt`, which two saves in the same millisecond share.
   const stored = { ...entry, version: STATE_VERSION, paneId, updatedAt: new Date().toISOString(), revision: randomBytes(6).toString("hex") };
-  writeJsonAtomic(paneEntryPath(stateDir, paneId), stored);
+  // Every writer takes the mapping lock, so a compare-and-delete under the same
+  // lock can never unlink a file another process replaced in between.
+  withPaneLock(stateDir, paneId, () => writeJsonAtomic(paneEntryPath(stateDir, paneId), stored));
   return stored;
 }
 
@@ -135,6 +137,9 @@ export function paneLockPath(stateDir, paneId) {
   return `${paneEntryPath(stateDir, paneId)}.lock`;
 }
 
+/** Lock files this process holds right now, so nested sections do not wait for themselves. */
+const heldLocks = new Set();
+
 function processAlive(pid) {
   try {
     process.kill(pid, 0);
@@ -163,6 +168,10 @@ function sleepSync(ms) {
  */
 export function withPaneLock(stateDir, paneId, fn, { waitMs = 5000 } = {}) {
   const lock = paneLockPath(stateDir, paneId);
+  if (heldLocks.has(lock)) {
+    // Re-entrant within one process: a save inside a locked section must not wait for itself.
+    return fn();
+  }
   mkdirSync(path.dirname(lock), { recursive: true });
   const deadline = Date.now() + waitMs;
   for (;;) {
@@ -180,9 +189,11 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = 5000 } = {}) {
       } finally {
         closeSync(fd);
       }
+      heldLocks.add(lock);
       try {
         return fn();
       } finally {
+        heldLocks.delete(lock);
         try {
           unlinkSync(lock);
         } catch {
@@ -225,24 +236,28 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = 5000 } = {}) {
  * @returns {boolean} Whether the entry was removed.
  */
 export function deletePaneEntryIfUnchanged(stateDir, paneId, seen) {
-  const current = getPaneEntry(stateDir, paneId);
-  if (!current || current.revision !== seen?.revision || current.updatedAt !== seen?.updatedAt) {
-    return false;
-  }
-  return deletePaneEntry(stateDir, paneId);
+  return withPaneLock(stateDir, paneId, () => {
+    const current = getPaneEntry(stateDir, paneId);
+    if (!current || current.revision !== seen?.revision || current.updatedAt !== seen?.updatedAt) {
+      return false;
+    }
+    return deletePaneEntry(stateDir, paneId);
+  });
 }
 
 export function deletePaneEntry(stateDir, paneId) {
   const file = paneEntryPath(stateDir, paneId);
-  if (!existsSync(file)) {
-    return false;
-  }
-  try {
-    unlinkSync(file);
-  } catch (error) {
-    throw new PluginError("startup", `Could not remove ${file}: ${error.message}`, { cause: error });
-  }
-  return true;
+  return withPaneLock(stateDir, paneId, () => {
+    if (!existsSync(file)) {
+      return false;
+    }
+    try {
+      unlinkSync(file);
+    } catch (error) {
+      throw new PluginError("startup", `Could not remove ${file}: ${error.message}`, { cause: error });
+    }
+    return true;
+  });
 }
 
 /**

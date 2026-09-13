@@ -119,3 +119,20 @@ test("withPaneLock runs the callback under a lock file, breaks stale locks and g
   assert.ok(Date.now() - started >= 150, "waited for the live owner before giving up");
   assert.ok(existsSync(lock), "a live owner's lock is left alone");
 });
+
+test("the mapping lock is re-entrant and every writer and deleter takes it", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  const entry = { sandboxName: "herdr-x-1", localPath: "/w", workdir: "/w", agentKind: "claude-code", workspaceMode: "mount", lifecycleState: "ready" };
+  const seen = withPaneLock(stateDir, "pane-1", () => {
+    const stored = savePaneEntry(stateDir, "pane-1", entry);
+    assert.ok(existsSync(lock), "a save inside a locked section reuses the lock instead of waiting for it");
+    return withPaneLock(stateDir, "pane-1", () => getPaneEntry(stateDir, "pane-1"));
+  });
+  assert.ok(!existsSync(lock));
+  assert.equal(seen.sandboxName, "herdr-x-1");
+  writeFileSync(lock, `${process.pid}\n`);
+  assert.throws(() => savePaneEntry(stateDir, "pane-1", { ...entry, sandboxName: "herdr-x-2" }), (error) => error.errorKind === "conflict" && /locked by process/.test(error.message), "a save waits for a foreign live lock rather than racing it");
+  assert.throws(() => deletePaneEntryIfUnchanged(stateDir, "pane-1", seen), (error) => error.errorKind === "conflict");
+  assert.equal(getPaneEntry(stateDir, "pane-1").sandboxName, "herdr-x-1", "nothing changed while the lock was foreign");
+});

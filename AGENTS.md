@@ -78,7 +78,7 @@ There is no lint, format or typecheck tool configured. `npm install` is unnecess
 | Printing a port | `sandboxPortUrl` + `hyperlink` from `src/links.mjs`; the link handler pattern in the manifest must keep matching |
 | Calling Herdr | Go through `createHerdrClient` (`src/herdr.mjs`), never the socket; check many panes with one `listPaneIds()` (`pane list`), not a `getPane` per mapping |
 | Reporting a failure | Throw `PluginError(kind, message, {output})` with a kind from `ERROR_KINDS` (`src/errors.mjs`) |
-| Writing state | `savePaneEntry`/`updatePaneEntry` only (one atomic file per pane); never edit `panes/*.json` by hand |
+| Writing state | `savePaneEntry`/`updatePaneEntry` only (one atomic file per pane, written under the re-entrant `withPaneLock`); never edit `panes/*.json` by hand |
 | Printing from an action | stdout is reserved for the result marker line (`emitResult`); diagnostics go to stderr |
 | Printing from the bridge | stdout is the pane; use the injected `log` |
 | Adding tests | `test/<area>.test.mjs`, `node:test` + `node:assert/strict`; fixtures via `test/helpers.mjs` |
