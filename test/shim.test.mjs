@@ -106,3 +106,26 @@ test("the build script skips a node that is too old and warns when nothing newer
   assert.match(onlyOld.stderr, /node 12\.22\.12 at .* is older than 20/);
   assert.equal(readFileSync(path.join(dir, "node-path"), "utf8").trim(), old, "recorded anyway so the user sees node's own error rather than none");
 });
+
+test("run-action.sh invokes an action and waits for its result line", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-run-action-"));
+  const logs = path.join(dir, "logs.json");
+  const env = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HERDR_BIN_PATH: path.join(ROOT, "test", "fakes", "herdr.mjs"), FAKE_HERDR_ACTION_LOGS: logs, FAKE_HERDR_LOG: path.join(dir, "herdr.log") };
+  writeFileSync(logs, JSON.stringify([{ action_id: "info", status: "succeeded", stdout: 'HERDR_SANDBOX_RESULT: {"schemaVersion":1,"plugin":"sbx.sandbox","action":"info","ok":true,"paneId":"p1"}\nmore output\n', stderr: "pane p0 has no sandbox; using the workspace's only mapping\n" }]));
+  const ok = spawnSync("sh", [path.join(ROOT, "scripts", "run-action.sh"), "info", "5"], { encoding: "utf8", env });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(ok.stdout, 'HERDR_SANDBOX_RESULT: {"schemaVersion":1,"plugin":"sbx.sandbox","action":"info","ok":true,"paneId":"p1"}\n');
+  assert.match(ok.stderr, /using the workspace's only mapping/);
+  const calls = readFileSync(path.join(dir, "herdr.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line).argv.slice(0, 3).join(" "));
+  assert.equal(calls[0], "plugin action invoke");
+  writeFileSync(logs, JSON.stringify([{ action_id: "stop", status: "failed", stdout: 'HERDR_SANDBOX_RESULT: {"ok":false,"errorKind":"conflict","message":"busy"}\n', stderr: "" }, { action_id: "info", status: "succeeded", stdout: 'HERDR_SANDBOX_RESULT: {"ok":true}\n', stderr: "" }]));
+  const failed = spawnSync("sh", [path.join(ROOT, "scripts", "run-action.sh"), "stop", "5"], { encoding: "utf8", env });
+  assert.equal(failed.status, 1, "a result with ok:false exits 1");
+  assert.match(failed.stdout, /"errorKind":"conflict"/);
+  writeFileSync(logs, JSON.stringify([{ action_id: "forget-mapping", status: "running", stdout: "", stderr: "" }]));
+  const timedOut = spawnSync("sh", [path.join(ROOT, "scripts", "run-action.sh"), "forget-mapping", "4"], { encoding: "utf8", env });
+  assert.equal(timedOut.status, 2);
+  assert.match(timedOut.stderr, /waiting for its popup/);
+  assert.match(timedOut.stderr, /did not finish within 4 seconds/);
+  assert.equal(spawnSync("sh", [path.join(ROOT, "scripts", "run-action.sh")], { encoding: "utf8", env }).status, 2, "usage error");
+});

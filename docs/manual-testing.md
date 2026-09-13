@@ -9,22 +9,12 @@ says what to run, what should happen, and what to write down when it does not.
 ## Helper
 
 Actions return as soon as Herdr has started them; the outcome lands in the
-plugin log. This shell function invokes an action and waits for its result
-line. Define it in every pane you test from, or add it to your shell rc file:
+plugin log. `scripts/run-action.sh` invokes an action and waits for its result
+line. Define a shorthand in every pane you test from, or add it to your shell
+rc file:
 
 ```bash
-sbxrun() {
-  herdr plugin action invoke "$1" --plugin sbx.sandbox >/dev/null
-  for i in $(seq 1 120); do
-    sleep 1
-    out=$(herdr plugin log list --plugin sbx.sandbox --limit 1 | node -e '
-      const log = JSON.parse(require("fs").readFileSync(0, "utf8")).result.logs[0];
-      if (log.status === "running") process.exit(3);
-      console.log(log.status, "-", (log.stdout || "").split("\n")[0]);
-      if (log.stderr) console.log(log.stderr.trim());') && { printf "%s\n" "$out"; return; }
-  done
-  echo "still running after 120s"
-}
+sbxrun() { sh /path/to/herdr-sbx-plugin/scripts/run-action.sh "$@"; }
 ```
 
 Pane-scoped actions use the focused pane, or the workspace's only sandbox when

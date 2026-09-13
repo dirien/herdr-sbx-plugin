@@ -109,7 +109,8 @@ That is the whole loop. The rest of this document is reference.
 ## Actions
 
 Every action is an entry point Herdr can bind or invoke; `herdr plugin action
-invoke <action> --plugin sbx.sandbox` runs one from a terminal.
+invoke <action> --plugin sbx.sandbox` runs one from any host terminal, and
+`sh scripts/run-action.sh <action>` does the same and waits for the result.
 
 | Action | Context | What it does |
 | --- | --- | --- |
@@ -345,6 +346,17 @@ herdr plugin action invoke start-agent --plugin sbx.sandbox
 herdr plugin log list --plugin sbx.sandbox --limit 1
 ```
 
+`invoke` returns as soon as Herdr has started the action, so the log entry may
+still say `running` for a moment, or for as long as a deletion popup waits for
+its answer. `scripts/run-action.sh` does the waiting for you: it invokes the
+action, polls the log, prints the result line plus the action's stderr, and
+exits 0 when `ok` is true.
+
+```bash
+sh scripts/run-action.sh info
+sh scripts/run-action.sh forget-mapping 120   # answer the popup in Herdr meanwhile
+```
+
 Besides `schemaVersion`, `plugin`, `action` and `ok`, a successful line
 carries these fields:
 
@@ -477,6 +489,7 @@ The tests run the real scripts as child processes against fake `sbx` and
 | `herdr-plugin.toml` | Manifest: actions, the `worktree.removed` hook, the popup and overlay panes, the port link handler |
 | `bin/run.sh`, `scripts/write-node-path.sh` | Node shim and the build step that records the path of a Node 20+ binary |
 | `scripts/install-keybindings.sh` | Adds key bindings to the Herdr config and reloads it; the `install-keybindings` action runs it |
+| `scripts/run-action.sh` | Invokes an action from a terminal and waits for its result line |
 | `src/action.mjs` | Entry point that always prints the result marker |
 | `src/action-main.mjs` | Action handlers |
 | `src/context.mjs` | Herdr environment, invocation context, mount root rules |

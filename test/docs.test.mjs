@@ -93,7 +93,7 @@ test("README documents every action, config key, agent kind and error kind", () 
 });
 
 test("README documents the hook, the popup, the environment overrides and every module", () => {
-  for (const token of ["worktree.removed", "deletion-confirmation", SBX_BIN_ENV, CONFIRMATION_TIMEOUT_ENV, "HERDR_AGENT", "docs/manual-testing.md", "sbx://", "bin/run.sh", "scripts/write-node-path.sh", "scripts/install-keybindings.sh"]) {
+  for (const token of ["worktree.removed", "deletion-confirmation", SBX_BIN_ENV, CONFIRMATION_TIMEOUT_ENV, "HERDR_AGENT", "docs/manual-testing.md", "sbx://", "bin/run.sh", "scripts/write-node-path.sh", "scripts/install-keybindings.sh", "scripts/run-action.sh"]) {
     assert.ok(readme.includes(token), `README mentions ${token}`);
   }
   for (const file of readdirSync(path.join(ROOT, "src")).filter((name) => name.endsWith(".mjs"))) {

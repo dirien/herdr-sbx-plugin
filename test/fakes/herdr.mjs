@@ -10,7 +10,9 @@
  * that starts while the action is already opening a replacement pane.
  * FAKE_HERDR_POPUP_BRIDGE_PANE + FAKE_HERDR_POPUP_BRIDGE_PID record a live bridge
  * on that mapping when the confirmation popup opens, emulating an agent that
- * reconnects while the popup is waiting for an answer.
+ * reconnects while the popup is waiting for an answer. `plugin action invoke`
+ * answers like Herdr does, and `plugin log list` returns the entries in
+ * FAKE_HERDR_ACTION_LOGS (a JSON file holding an array), newest first.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -87,6 +89,12 @@ if (command === "pane run" && process.env.FAKE_HERDR_BRIDGE_STARTS === "1" && pr
   } else {
     process.stdout.write(`${JSON.stringify({ result: { pane: { pane_id: newPaneId } } })}\n`);
   }
+} else if (command === "plugin action" && argv[2] === "invoke") {
+  process.stdout.write(`${JSON.stringify({ result: { type: "plugin_action_invoked", log: { action_id: argv[3], status: "running" } } })}\n`);
+} else if (command === "plugin log") {
+  const file = process.env.FAKE_HERDR_ACTION_LOGS;
+  const logs = file && existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+  process.stdout.write(`${JSON.stringify({ result: { type: "plugin_log_list", logs } })}\n`);
 } else if (command === "plugin pane") {
   if (process.env.FAKE_HERDR_RESTORE_PANES_ON_POPUP === "1" && process.env.FAKE_HERDR_MISSING_PANES_FILE) {
     writeFileSync(process.env.FAKE_HERDR_MISSING_PANES_FILE, "");
