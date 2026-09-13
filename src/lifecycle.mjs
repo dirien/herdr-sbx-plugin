@@ -704,8 +704,33 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
   function acknowledgeBridge(paneId, launchId = null) {
     withOwnershipLocks(paneId, (entry) => {
       assertNoDeletion(paneId, entry, "not attaching");
+      assertNoOtherBridge(paneId, entry);
       updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid, bridgeToken: processStartToken(process.pid) });
     });
+  }
+
+  /**
+   * Throws when another live bridge already owns this mapping, or a mapping
+   * that tracks one of the same sandboxes: a second bridge would overwrite the
+   * first one's record and, on exit, clear it, leaving the first invisible to
+   * every deletion safeguard.
+   * @param {string} paneId
+   * @param {Record<string, any>} entry
+   */
+  function assertNoOtherBridge(paneId, entry) {
+    if (bridgeIsRunning(entry) && entry.bridgePid !== process.pid) {
+      throw new PluginError("conflict", `Pane ${paneId} already runs a bridge for ${entry.sandboxName} (pid ${entry.bridgePid}, since ${entry.bridgeStartedAt}); not starting a second one. Exit that agent first, or use another pane.`);
+    }
+    const mine = new Set(trackedSandboxNames(entry));
+    for (const other of Object.values(loadState(stateDir).panes)) {
+      if (other.paneId === paneId) {
+        continue;
+      }
+      const shared = trackedSandboxNames(other).filter((name) => mine.has(name));
+      if (shared.length > 0 && bridgeIsRunning(other) && other.bridgePid !== process.pid) {
+        throw new PluginError("conflict", `${shared.join(", ")} ${shared.length === 1 ? "is" : "are"} already attached through pane ${other.paneId} (pid ${other.bridgePid}); not starting a second bridge.`);
+      }
+    }
   }
 
   /**

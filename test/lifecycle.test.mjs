@@ -351,3 +351,24 @@ test("only a bridge running in shell mode counts as a live shell", () => {
     agent.stop();
   }
 });
+
+test("a second bridge never overwrites a live bridge's ownership record", () => {
+  const first = fakeBridgeProcess("pane-1");
+  const other = fakeBridgeProcess("pane-9");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: first.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", sandboxName: "herdr-codex-999999999999", bridgePid: 2147483647, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+    "pane-3": mappingFor({ worktree: p.worktree }, { paneId: "pane-3", sandboxName: "herdr-x-333333333333", replacesSandboxNames: ["herdr-y-444444444444"] }),
+    "pane-9": mappingFor({ worktree: p.worktree }, { paneId: "pane-9", sandboxName: "herdr-y-444444444444", bridgePid: other.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.acknowledgeBridge("pane-1", "second"), (error) => error.errorKind === "conflict" && /already runs a bridge/.test(error.message));
+  assert.equal(f.mappings().panes["pane-1"].bridgePid, first.pid, "the live record is untouched");
+  lifecycle.acknowledgeBridge("pane-2", "fresh");
+  assert.equal(f.mappings().panes["pane-2"].bridgePid, process.pid, "a dead record is replaced");
+  assert.throws(() => lifecycle.acknowledgeBridge("pane-3", "dup"), (error) => error.errorKind === "conflict" && /already attached through pane pane-9/.test(error.message));
+  first.stop();
+  other.stop();
+  f.cleanup();
+});

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import path from "node:path";
 import { parseBridgeArgs } from "../src/bridge-main.mjs";
-import { FAKE_SBX, createFixture, fakeActionProcess, fakeShellProcess, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
+import { FAKE_SBX, createFixture, fakeActionProcess, fakeBridgeProcess, fakeShellProcess, mappingFor, readJsonLines, runBridge } from "./helpers.mjs";
 
 const NAME = "herdr-claude-code-abc123def456";
 
@@ -298,5 +298,17 @@ test("the shell bridge does not open into a deletion in progress", () => {
   deleter.stop();
   const stale = fakeShellProcess("pane-1");
   stale.stop();
+  f.cleanup();
+});
+
+test("a bridge started for a mapping another bridge still owns exits without attaching", () => {
+  const first = fakeBridgeProcess("pane-1");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: first.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }) }) });
+  const { status, stdout } = runBridge(f, "connect", "pane-1", { args: ["--launch-id", "second"] });
+  assert.equal(status, 1);
+  assert.match(stdout, /already runs a bridge/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "exec"), "no second attach");
+  assert.equal(f.mappings().panes["pane-1"].bridgePid, first.pid);
+  first.stop();
   f.cleanup();
 });
