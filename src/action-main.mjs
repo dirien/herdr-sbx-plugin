@@ -581,7 +581,12 @@ const ACTIONS = {
   },
 
   stop(deps) {
-    const { paneId } = requireFocusedMapping(deps);
+    const target = requireFocusedMapping(deps);
+    const { paneId } = target;
+    // sbx stop kills an attached session outright (the agent exits with 137), so
+    // an attached agent or shell has to be closed first, as for every other
+    // action that would pull the VM out from under it.
+    refuseWhileAgentRuns(deps, target, "stop the sandbox");
     const outcome = deps.lifecycle.stop(paneId);
     deps.herdr.notify("Docker Sandbox stopped", outcome.sandboxName);
     return { payload: { paneId, sandboxName: outcome.sandboxName } };

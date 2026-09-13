@@ -1286,3 +1286,23 @@ test("fetch-changes suggests a non-clashing branch when the host branch exists w
   assert.deepEqual(again.result.keep, [], "once a host branch reaches the commits nothing is suggested");
   f.cleanup();
 });
+
+test("stop refuses while the agent's bridge or a shell is attached, because sbx stop would kill it", () => {
+  const bridge = fakeBridgeProcess("pane-1");
+  const shell = fakeShellProcess("pane-2");
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }, { name: "herdr-codex-999999999999", status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: bridge.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", sandboxName: "herdr-codex-999999999999", shellPids: [{ pid: shell.pid, since: "2026-09-13T00:00:00.000Z", paneId: "pane-2" }] }),
+  }) });
+  const attached = runAction(f, "stop", { context: { focused_pane_id: "pane-1" } });
+  assert.equal(attached.result.errorKind, "conflict", JSON.stringify(attached.result));
+  assert.match(attached.result.message, /still runs the bridge .*before you stop the sandbox/);
+  const withShell = runAction(f, "stop", { context: { focused_pane_id: "pane-2" } });
+  assert.equal(withShell.result.errorKind, "conflict");
+  assert.match(withShell.result.message, /open-shell session/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "stop"), "sbx stop never ran");
+  assert.ok(f.sbxSandboxes().every((item) => item.status === "running"));
+  bridge.stop();
+  shell.stop();
+  f.cleanup();
+});

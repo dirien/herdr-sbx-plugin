@@ -249,8 +249,10 @@ action is running.
 
 ## 8. stop, then reconnect
 
-Run `stop` from the agent pane. Expect a toast "Docker Sandbox stopped" and
-`sbx ls` showing the sandbox stopped. Run `reconnect`: the sandbox must start
+With the agent still running, `stop` must be refused with `errorKind:
+"conflict"` (an `sbx stop` would kill the session with exit code 137). Exit the
+agent, then run `stop`. Expect a toast "Docker Sandbox stopped" and `sbx ls`
+showing the sandbox stopped. Run `reconnect`: the sandbox must start
 again on its own because `sbx exec` starts stopped sandboxes.
 
 ## 9. replace-sandbox

@@ -138,8 +138,8 @@ swallows the typed command, for example because it is not at a shell prompt,
 `reconnect` and `replace-sandbox` start in a fresh pane after four seconds
 instead (`movedTo`) and relabel the old one `(moved to ...)`. `reconnect`,
 `replace-sandbox` and `forget-mapping` refuse to run while Herdr still detects
-an agent in the target pane. Stopping a sandbox while the agent is attached
-ends that session.
+an agent in the target pane, and so does `stop`, because `sbx stop` kills an
+attached session outright.
 
 ## Key bindings
 
