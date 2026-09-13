@@ -352,7 +352,7 @@ carries these fields:
 | `start-agent` | `paneId`, `sourcePaneId`, `sandboxName`, `agentKind`, `localPath`, `workdir`, `workspaceMode`, `openIn`, `previousSandboxNames` |
 | `reconnect` | `paneId`, `sandboxName`, `agentKind`, `mode` (`connect`, or `start` when the sandbox still has to be prepared or the bridge was moved), `adoptedFrom` (the old pane id when a mapping whose pane was gone got a new one), `movedTo` (the new pane id when a live pane swallowed the typed command) |
 | `open-shell` | `paneId` (the shell pane), `mappedPaneId`, `sandboxName` |
-| `fetch-changes` | `paneId`, `remote`, `transport` (`remote` or `bundle`), `branches`, `keep` (a `git branch` command per branch) |
+| `fetch-changes` | `paneId`, `remote`, `transport` (`remote` or `bundle`), `branches`, `keep` (one entry per fetched ref whose commits the host does not reach yet: `ref`, `local`, `reason`, and the `git branch` `command`; a host branch of the same name gets a `-sandbox` suffix) |
 | `stop` | `paneId`, `sandboxName` |
 | `info` | `paneId`, `mapping`, `agent`, `gitRemote`, `sandbox`, `sandboxError`, `ports`, `portsError` |
 | `prune-mappings` | `pruned`, `kept` (each with `paneId`, `sandboxName`, and a `reason` for kept ones), `deleted`, `failures` (deletions that failed after DELETE, each with `errorKind` and `message`), `orphansConfirmed` |

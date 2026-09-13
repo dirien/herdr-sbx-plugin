@@ -748,7 +748,7 @@ test("fetch-changes uses the registered remote of a running sandbox, in clone mo
   assert.equal(result.remote, `sandbox-${NAME}`);
   assert.deepEqual(result.branches, [`sandbox-${NAME}/agent-work`], "the remote HEAD pointer is not listed as a branch");
   assert.equal(result.transport, "remote");
-  assert.deepEqual(result.keep, [{ ref: `sandbox-${NAME}/agent-work`, local: "agent-work", command: `git -C ${f.worktree} branch agent-work sandbox-${NAME}/agent-work` }]);
+  assert.deepEqual(result.keep, [{ ref: `sandbox-${NAME}/agent-work`, local: "agent-work", reason: "the host has no such branch", command: `git -C ${f.worktree} branch agent-work sandbox-${NAME}/agent-work` }]);
   assert.match(stdout, /Keep a branch with:/);
   assert.deepEqual(f.sbxCalls(), [["ls", "--json"]], "a running sandbox needs no exec before the fetch");
   assert.equal(runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-2" } }).result.errorKind, "target");
@@ -1262,5 +1262,27 @@ test("a shell opened under the old pane still protects the sandbox after the map
   assert.match(result.message, /an open-shell session/);
   assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"), "the sandbox under the shell was not deleted");
   shell.stop();
+  f.cleanup();
+});
+
+test("fetch-changes suggests a non-clashing branch when the host branch exists without the fetched commits", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }, { workspaceMode: "clone" }) }) });
+  const bare = path.join(f.root, "sandbox-repo.git");
+  git(f.root, ["init", "-q", "--bare", "--initial-branch=agent-work", bare]);
+  git(f.worktree, ["remote", "add", `sandbox-${NAME}`, bare]);
+  git(f.worktree, ["checkout", "-q", "-b", "agent-work"]);
+  writeFileSync(path.join(f.worktree, "note.txt"), "note\n");
+  git(f.worktree, ["add", "note.txt"]);
+  git(f.worktree, ["commit", "-q", "-m", "agent work"]);
+  git(f.worktree, ["push", "-q", `sandbox-${NAME}`, "HEAD:refs/heads/agent-work"]);
+  git(f.worktree, ["reset", "-q", "--hard", "HEAD~1"]);
+  git(f.worktree, ["checkout", "-q", "-"]);
+  const { result, stdout } = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" } });
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(result.keep.map((item) => [item.local, item.reason]), [["agent-work-sandbox", "the host's agent-work does not contain these commits"]]);
+  assert.match(stdout, /branch agent-work-sandbox sandbox-.*agent-work   # the host's agent-work does not contain these commits/);
+  git(f.worktree, ["branch", "agent-work-sandbox", `sandbox-${NAME}/agent-work`]);
+  const again = runAction(f, "fetch-changes", { context: { focused_pane_id: "pane-1" } });
+  assert.deepEqual(again.result.keep, [], "once a host branch reaches the commits nothing is suggested");
   f.cleanup();
 });

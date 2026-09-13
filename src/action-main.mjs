@@ -205,6 +205,43 @@ export function keepBranchCommand(localPath, local, ref) {
   return ["git", "-C", localPath, "branch", local, ref].map(shellQuote).join(" ");
 }
 
+/**
+ * For each fetched `sandbox-<name>/<branch>` ref, the local branch that would
+ * keep its commits once the sandbox is deleted: the branch's own name when the
+ * host has no such branch, a `<branch>-sandbox` name when the host branch
+ * exists but no local branch reaches the fetched commits, and nothing when
+ * some local branch already does.
+ * @param {string} localPath
+ * @param {string} remote
+ * @param {string[]} branches Fetched refs, `<remote>/<branch>`.
+ * @returns {Array<{ref: string, local: string, reason: string, command: string}>}
+ */
+export function keepSuggestions(localPath, remote, branches) {
+  const git = (...args) => spawnSync("git", ["-C", localPath, ...args], { encoding: "utf8" });
+  const exists = (branch) => git("show-ref", "--verify", "--quiet", `refs/heads/${branch}`).status === 0;
+  const reached = (ref) => {
+    const result = git("branch", "--contains", ref, "--format=%(refname:short)");
+    return result.status === 0 && result.stdout.trim() !== "";
+  };
+  const keep = [];
+  for (const ref of branches) {
+    const branch = ref.slice(remote.length + 1);
+    if (!exists(branch)) {
+      keep.push({ ref, local: branch, reason: "the host has no such branch" });
+      continue;
+    }
+    if (reached(ref)) {
+      continue;
+    }
+    let local = `${branch}-sandbox`;
+    for (let index = 2; exists(local); index += 1) {
+      local = `${branch}-sandbox-${index}`;
+    }
+    keep.push({ ref, local, reason: `the host's ${branch} does not contain these commits` });
+  }
+  return keep.map((item) => ({ ...item, command: keepBranchCommand(localPath, item.local, item.ref) }));
+}
+
 /** Extra popup text for clone-mode sandboxes, whose git remote and fetched refs vanish with them. */
 function cloneWarning(entry) {
   return entry.workspaceMode === "clone" ? ` Clone mode: every branch fetched from it under sandbox-${entry.sandboxName}/ is removed too. Cancel and run "git branch <name> sandbox-${entry.sandboxName}/<name>" first to keep work.` : "";
@@ -532,14 +569,12 @@ const ACTIONS = {
     const { paneId, entry } = requireFocusedMapping(deps);
     const outcome = deps.lifecycle.fetchChanges(paneId);
     const lines = outcome.output ? [outcome.output] : [];
-    // Suggest keeping only branches the host repository does not have yet.
-    const keep = outcome.branches
-      .map((ref) => ({ ref, local: ref.slice(outcome.remote.length + 1) }))
-      .filter(({ local }) => spawnSync("git", ["-C", entry.localPath, "show-ref", "--verify", "--quiet", `refs/heads/${local}`]).status !== 0)
-      .map((item) => ({ ...item, command: keepBranchCommand(entry.localPath, item.local, item.ref) }));
+    // Suggest keeping every fetched commit the host does not reach yet, under a
+    // name that does not clash with a host branch of the same name.
+    const keep = keepSuggestions(entry.localPath, outcome.remote, outcome.branches);
     if (keep.length > 0) {
       lines.push("These refs disappear when the sandbox is deleted. Keep a branch with:");
-      for (const item of keep) lines.push(`  ${item.command}`);
+      for (const item of keep) lines.push(`  ${item.command}   # ${item.reason}`);
     }
     return { payload: { paneId, remote: outcome.remote, transport: outcome.transport, branches: outcome.branches, keep }, lines };
   },
