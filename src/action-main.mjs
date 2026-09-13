@@ -309,7 +309,8 @@ function rehomeOrphan(deps, target, label, { abandonIf = null } = {}) {
       if (paneId !== oldPaneId && abandonIf && abandonIf()) {
         return null;
       }
-      if (bridgeIsRunning(latest) || deletionInProgress(latest)) {
+      // This process's own deletion claim (replace-sandbox re-homing after destroy) is fine to carry along.
+      if (bridgeIsRunning(latest) || (deletionInProgress(latest) && latest.deletingPid !== process.pid)) {
         throw new PluginError("conflict", `The mapping of pane ${oldPaneId} is in use again (bridge ${latest.bridgePid ?? "none"}, deletion ${latest.deletingPid ?? "none"}); nothing was moved.`);
       }
       const next = { ...latest, workspaceId: workspaceOf(deps), sourcePaneId: focused, adoptedFrom: oldPaneId };
@@ -728,17 +729,25 @@ const ACTIONS = {
     if (!confirmed) {
       throw new PluginError("cancelled", `Replacing ${entry.sandboxName} was not confirmed.`);
     }
-    // Delete only what the popup showed; a mapping changed meanwhile aborts with a conflict.
-    const outcome = deps.lifecycle.destroy(paneId, { expectedNames: targets });
+    // Delete only what the popup showed; a mapping changed meanwhile aborts with a
+    // conflict. The deletion's claim on the mapping is kept until the replacement
+    // is written, so no bridge can adopt the old mapping in between.
+    const outcome = deps.lifecycle.destroy(paneId, { expectedNames: targets, keepClaim: true });
     if (target.orphan) {
       paneId = rehomeOrphan(deps, { ...target, entry: getPaneEntry(deps.pluginEnv.stateDir, paneId) ?? entry }, paneLabel(agent.kind, sandboxName));
     }
-    // Build the history from the mapping as it is now: re-homing may have absorbed a displaced mapping's sandboxes.
-    const current = getPaneEntry(deps.pluginEnv.stateDir, paneId) ?? entry;
-    savePaneEntry(deps.pluginEnv.stateDir, paneId, {
-      ...freshEntry({ sandboxName, agent, localPath, workdir, config: deps.config, sourcePaneId: current.sourcePaneId ?? null, workspaceId: current.workspaceId ?? workspaceOf(deps) }),
-      replacesSandboxNames: trackedNames(current),
-      deletedSandboxNames: [...new Set([...(current.deletedSandboxNames ?? []), ...outcome.deleted, ...outcome.missing])],
+    withPaneLock(deps.pluginEnv.stateDir, paneId, () => {
+      // Build the history from the mapping as it is now: re-homing may have absorbed a displaced mapping's sandboxes.
+      const current = getPaneEntry(deps.pluginEnv.stateDir, paneId);
+      if (!current || current.deletingPid !== process.pid) {
+        throw new PluginError("conflict", `The mapping of pane ${paneId} was taken over by process ${current?.deletingPid ?? "unknown"} after ${outcome.deleted.join(", ") || "nothing"} was deleted; no replacement was started.`);
+      }
+      // The fresh entry carries no claim: the swap ends the deletion.
+      savePaneEntry(deps.pluginEnv.stateDir, paneId, {
+        ...freshEntry({ sandboxName, agent, localPath, workdir, config: deps.config, sourcePaneId: current.sourcePaneId ?? null, workspaceId: current.workspaceId ?? workspaceOf(deps) }),
+        replacesSandboxNames: trackedNames(current),
+        deletedSandboxNames: [...new Set([...(current.deletedSandboxNames ?? []), ...outcome.deleted, ...outcome.missing])],
+      });
     });
     const label = paneLabel(agent.kind, sandboxName);
     try {

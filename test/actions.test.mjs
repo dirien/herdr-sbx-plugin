@@ -1199,3 +1199,27 @@ test("prune-mappings keeps a mapping whose bridge is still creating a sandbox th
   bridge.stop();
   f.cleanup();
 });
+
+test("replace-sandbox keeps its claim until the replacement is written and stops when it is taken over", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const ok = runAction(f, "replace-sandbox", { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed" } });
+  assert.equal(ok.result.ok, true, JSON.stringify(ok.result));
+  const replaced = f.mappings().panes["pane-1"];
+  assert.notEqual(replaced.sandboxName, NAME);
+  assert.equal(replaced.deletingPid, undefined, "the fresh mapping carries no claim");
+  assert.deepEqual(replaced.deletedSandboxNames, [NAME]);
+
+  const other = fakeActionProcess();
+  const stolen = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const { result } = runAction(stolen, "replace-sandbox", { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_SBX_RM_TOUCH_PANE: "pane-1", FAKE_SBX_RM_TOUCH_DELETING_PID: String(other.pid) } });
+  assert.equal(result.ok, false);
+  assert.equal(result.errorKind, "conflict");
+  assert.match(result.message, /taken over by process/);
+  const left = stolen.mappings().panes["pane-1"];
+  assert.equal(left.sandboxName, NAME, "no replacement mapping was written over the other process's claim");
+  assert.deepEqual(left.deletedSandboxNames, [NAME], "what was deleted is recorded for whoever owns the mapping now");
+  assert.ok(!stolen.herdrCalls().some((call) => call[1] === "run"), "no bridge was started");
+  other.stop();
+  f.cleanup();
+  stolen.cleanup();
+});
