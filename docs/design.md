@@ -87,6 +87,17 @@ created.
 - Pane existence comes from one `herdr pane list` call, not one `pane get` per
   mapping, because the overlay asks every few seconds and a workspace with a
   handful of sandboxes would otherwise spawn a process per row per frame.
+- Ownership is explicit. Herdr's agent detection cannot see a bridge that is
+  still inside `sbx create`, nor an `open-shell` session, so bridges, shells
+  and deletions record their own process (pid plus start time, verified by
+  command line) on the mapping. `destroy` claims the mapping before the first
+  `sbx rm` and re-reads it before every one; `acknowledgeBridge` and
+  `acknowledgeShell` refuse while a claim is live. All of it happens under
+  file locks: one per mapping, plus one per sandbox taken first in a fixed
+  order, because an interrupted move can leave two mappings for one sandbox.
+  Locks are O_EXCL files holding the owner's pid and start time; a lock whose
+  owner is gone is reclaimed under a separate guard, so two contenders never
+  remove each other's fresh lock, and a waiter always gives up at its deadline.
 
 ## Borrowed from other plugins
 

@@ -403,6 +403,15 @@ is exactly the removed worktree, and asks before deleting like every other
 deletion. Confirmation requests for the popup live next to the mappings under
 `confirmations/` and are swept automatically.
 
+The plugin's own processes coordinate through the mappings too. A bridge
+records its process id while it prepares a sandbox or has the agent attached,
+an `open-shell` session does the same, and a deletion claims the mapping
+before the first `sbx rm`, so a deletion never runs under a live session and
+a session never starts into a deletion. The records name the process and its
+start time, so a recycled process id never keeps a mapping busy, and every
+change goes through short-lived `.lock` files next to the mappings that are
+reclaimed on their own when the process that held them died.
+
 Local Docker Sandboxes have no time-to-live. Every `start-agent` creates a new
 sandbox and mapping; `list-sandboxes` shows what the plugin tracks,
 `forget-mapping` deletes one sandbox, `prune-mappings` cleans up after removed
