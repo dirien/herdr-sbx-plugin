@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFile
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, paneLockPath, requirePaneEntry, savePaneEntry, updatePaneEntry, withPaneLock } from "../src/state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, paneLockPath, processStartToken, requirePaneEntry, savePaneEntry, updatePaneEntry, withPaneLock } from "../src/state.mjs";
 
 function freshDir() {
   return mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
@@ -219,4 +219,41 @@ test("a lock whose pid was recycled is reclaimed, and a live reclaim guard never
   }
   assert.ok(Date.now() - started < 5000, "the waiter returns, it does not spin forever");
   assert.ok(outcome === "acquired" || outcome === "conflict", `the wait ends one way or the other, got ${outcome}`);
+});
+
+test("process start tokens carry no whitespace, and a lock naming a live owner by its real token is honoured", async () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const lock = paneLockPath(stateDir, "pane-1");
+  mkdirSync(path.dirname(lock), { recursive: true });
+  const token = processStartToken(process.pid);
+  assert.ok(token && !/\s/.test(token), `token is a single word: ${token}`);
+  writeFileSync(lock, `${process.pid} ${token}\n`);
+  process.env.HERDR_SBX_LOCK_WAIT_MS = "200";
+  try {
+    assert.throws(() => withPaneLock(stateDir, "pane-1", () => "never"), (error) => error.errorKind === "conflict", "our own live incarnation holds the lock, so it is not reclaimed");
+  } finally {
+    delete process.env.HERDR_SBX_LOCK_WAIT_MS;
+  }
+  assert.ok(existsSync(lock));
+  writeFileSync(lock, `${process.pid} ps:Sun_Sep_13_12:34:56_2026\n`);
+  assert.equal(withPaneLock(stateDir, "pane-1", () => "reclaimed"), "reclaimed", "a token from another incarnation, whatever its shape, marks the lock stale");
+  // The same two-process contention as before, but with a lock that names a live owner in ps form on the wire.
+  const script = `
+    import { withPaneLock } from ${JSON.stringify(new URL("../src/state.mjs", import.meta.url).href)};
+    const [stateDir, paneId] = process.argv.slice(1);
+    const held = withPaneLock(stateDir, paneId, () => {
+      const start = Date.now();
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      return [start, Date.now()];
+    });
+    process.stdout.write(JSON.stringify(held));
+  `;
+  const run = () => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script, "--", stateDir, "pane-1"], { encoding: "utf8" });
+    let out = "";
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.on("exit", (code) => (code === 0 ? resolve(JSON.parse(out)) : reject(new Error(`exit ${code}`))));
+  });
+  const [a, b] = await Promise.all([run(), run()]);
+  assert.ok(Math.min(a[1], b[1]) - Math.max(a[0], b[0]) <= 0, "no overlap between two live holders");
 });

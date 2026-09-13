@@ -178,7 +178,9 @@ export function processStartToken(pid) {
   if (result.error || result.status !== 0) {
     return null;
   }
-  const started = (result.stdout ?? "").trim().replace(/\s+/g, " ");
+  // Tokens are stored next to pids in lock files and mapping records and must
+  // never contain whitespace, so the ps date is joined with underscores.
+  const started = (result.stdout ?? "").trim().replace(/\s+/g, "_");
   return started === "" ? null : `ps:${started}`;
 }
 
@@ -193,7 +195,10 @@ const LOCK_UNVERIFIED_MAX_MS = 60_000;
 function readLockOwner(lock) {
   try {
     const text = readFileSync(lock, "utf8").trim();
-    const [pid, token = null] = text.split(/\s+/);
+    // "<pid> <token>": the token is everything after the first whitespace, whatever it contains.
+    const split = text.search(/\s/);
+    const pid = split === -1 ? text : text.slice(0, split);
+    const token = split === -1 ? null : text.slice(split).trim() || null;
     return { text, pid: Number(pid), token, ageMs: Date.now() - statSync(lock).mtimeMs };
   } catch {
     return null;
