@@ -186,3 +186,17 @@ test("prepare deletes a sandbox whose mapping was forgotten while sbx create was
   assert.deepEqual(f.sbxSandboxes(), [], "no untracked VM is left behind");
   f.cleanup();
 });
+
+test("destroy refuses right before sbx rm when a bridge or an agent is active again", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { bridgePid: process.pid, bridgeStartedAt: "2026-09-13T00:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {}, herdr: { getPane: (paneId) => (paneId === "pane-2" ? { agent: "claude" } : null) } });
+  assert.throws(() => lifecycle.destroy("pane-1"), (error) => error.errorKind === "conflict" && /still runs the bridge/.test(error.message) && /Nothing was deleted/.test(error.message));
+  assert.throws(() => lifecycle.forget("pane-2"), (error) => error.errorKind === "conflict" && /running agent "claude" again/.test(error.message));
+  assert.deepEqual(f.sbxCalls(), [], "no sbx rm ran");
+  assert.deepEqual(Object.keys(f.mappings().panes).sort(), ["pane-1", "pane-2"]);
+  f.cleanup();
+});

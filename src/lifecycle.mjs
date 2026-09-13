@@ -121,7 +121,7 @@ function classifyGitFailure(output) {
 
 /**
  * Creates the lifecycle API bound to one state dir, config and sbx client.
- * @param {{stateDir: string, config: Record<string, any>, sbx?: ReturnType<typeof createSbxClient>, log?: (line: string) => void, herdr?: {reportAgent: Function, releaseAgent: Function}|null}} input
+ * @param {{stateDir: string, config: Record<string, any>, sbx?: ReturnType<typeof createSbxClient>, log?: (line: string) => void, herdr?: {reportAgent?: Function, releaseAgent?: Function, getPane?: Function}|null}} input
  */
 export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin: config.sbxBin }), log = (line) => process.stderr.write(`${line}\n`), herdr = null }) {
   /**
@@ -379,6 +379,24 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    */
   function destroy(paneId, { expectedNames = null } = {}) {
     const entry = requirePaneEntry(stateDir, paneId);
+    // The confirmation popup may have stayed open for a minute, long enough for
+    // reconnect to attach an agent again. This is the one place every sbx rm
+    // passes through, so the mapping is re-read and re-checked here, not only
+    // before the popup.
+    if (bridgeIsRunning(entry)) {
+      throw new PluginError("conflict", `Pane ${paneId} still runs the bridge for ${entry.sandboxName} (pid ${entry.bridgePid}, since ${entry.bridgeStartedAt}): the sandbox is being prepared or the agent is attached. Nothing was deleted.`);
+    }
+    if (typeof herdr?.getPane === "function") {
+      let agent = null;
+      try {
+        agent = herdr.getPane(paneId)?.agent ?? null;
+      } catch (error) {
+        log(`Could not ask Herdr about pane ${paneId} before deleting: ${errorMessageOf(error)}`);
+      }
+      if (agent) {
+        throw new PluginError("conflict", `Pane ${paneId} is running agent "${agent}" again. Nothing was deleted; exit the agent and try again.`);
+      }
+    }
     const names = deletionTargets(entry);
     if (expectedNames) {
       const current = [...names].sort();

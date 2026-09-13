@@ -86,3 +86,13 @@ test("a failing deletion keeps the mapping and exits 1", () => {
   assert.equal(f.mappings().panes["pane-1"].lastError.kind, "unknown");
   f.cleanup();
 });
+
+test("worktree.removed keeps a sandbox whose bridge came back while the popup was open", () => {
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+  const { status, stderr } = runEvent(f, "worktree.removed", removedEvent(f.worktree), { env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(process.pid) } });
+  assert.equal(status, 1);
+  assert.match(stderr, /still runs the bridge for .*Nothing was deleted/);
+  assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"), "no sbx rm ran");
+  assert.deepEqual(Object.keys(f.mappings().panes), ["pane-1"]);
+  f.cleanup();
+});

@@ -8,6 +8,9 @@
  * pane in the state dir, minus FAKE_HERDR_MISSING_PANES. FAKE_HERDR_ACK_ON_SPLIT=1
  * makes `pane split` acknowledge the last `pane run` launch, emulating a bridge
  * that starts while the action is already opening a replacement pane.
+ * FAKE_HERDR_POPUP_BRIDGE_PANE + FAKE_HERDR_POPUP_BRIDGE_PID record a live bridge
+ * on that mapping when the confirmation popup opens, emulating an agent that
+ * reconnects while the popup is waiting for an answer.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -87,6 +90,12 @@ if (command === "pane run" && process.env.FAKE_HERDR_BRIDGE_STARTS === "1" && pr
 } else if (command === "plugin pane") {
   if (process.env.FAKE_HERDR_RESTORE_PANES_ON_POPUP === "1" && process.env.FAKE_HERDR_MISSING_PANES_FILE) {
     writeFileSync(process.env.FAKE_HERDR_MISSING_PANES_FILE, "");
+  }
+  if (process.env.FAKE_HERDR_POPUP_BRIDGE_PANE && process.env.FAKE_HERDR_POPUP_BRIDGE_PID && process.env.HERDR_PLUGIN_STATE_DIR) {
+    const busy = getPaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_HERDR_POPUP_BRIDGE_PANE);
+    if (busy) {
+      savePaneEntry(process.env.HERDR_PLUGIN_STATE_DIR, process.env.FAKE_HERDR_POPUP_BRIDGE_PANE, { ...busy, bridgePid: Number(process.env.FAKE_HERDR_POPUP_BRIDGE_PID), bridgeStartedAt: new Date().toISOString() });
+    }
   }
   const decision = process.env.FAKE_POPUP_DECISION;
   const envArg = argv.find((item) => item.startsWith("HERDR_SBX_CONFIRMATION_ID="));

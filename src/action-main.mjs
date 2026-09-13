@@ -752,7 +752,7 @@ export async function main(env = process.env) {
     const config = loadConfig(pluginEnv.configDir, env);
     const sbx = createSbxClient({ bin: config.sbxBin, env });
     const herdr = createHerdrClient({ bin: pluginEnv.herdrBin, env });
-    const lifecycle = createLifecycle({ stateDir: pluginEnv.stateDir, config, sbx, log: (line) => process.stderr.write(`${line}\n`) });
+    const lifecycle = createLifecycle({ stateDir: pluginEnv.stateDir, config, sbx, log: (line) => process.stderr.write(`${line}\n`), herdr });
     const { payload, lines = [] } = await handler({ env, pluginEnv, context, config, sbx, herdr, lifecycle });
     emitResult({ action, ok: true, ...payload }, lines);
     return 0;

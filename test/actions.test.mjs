@@ -1119,3 +1119,17 @@ test("replace-sandbox still starts the replacement when the pane cannot be relab
   assert.ok(f.herdrCalls().some((call) => call[1] === "run"), "the bridge was started");
   f.cleanup();
 });
+
+test("a sandbox whose agent reconnected while the deletion popup was open is not deleted", () => {
+  for (const action of ["forget-mapping", "replace-sandbox"]) {
+    const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({ "pane-1": mappingFor({ worktree: p.worktree }) }) });
+    const { result } = runAction(f, action, { context: { focused_pane_id: "pane-1" }, env: { FAKE_POPUP_DECISION: "confirmed", FAKE_HERDR_POPUP_BRIDGE_PANE: "pane-1", FAKE_HERDR_POPUP_BRIDGE_PID: String(process.pid) } });
+    assert.equal(result.ok, false, action);
+    assert.equal(result.errorKind, "conflict", action);
+    assert.match(result.message, /still runs the bridge for .*Nothing was deleted/, action);
+    assert.equal(f.confirmations().length, 1, `${action}: the popup was shown, the answer arrived after the agent came back`);
+    assert.ok(!f.sbxCalls().some((call) => call[0] === "rm"), `${action}: no sbx rm ran`);
+    assert.equal(f.mappings().panes["pane-1"].sandboxName, NAME, `${action}: the mapping is untouched`);
+    f.cleanup();
+  }
+});
