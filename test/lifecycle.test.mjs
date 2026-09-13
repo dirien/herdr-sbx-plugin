@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { test } from "node:test";
@@ -217,7 +218,7 @@ test("a deletion claims the mapping: no bridge acknowledges and no second deleti
   const deleter = fakeActionProcess();
   const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
     "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }),
-    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", deletingPid: 2147483647, deletingSince: "2026-09-13T00:00:00.000Z" }),
+    "pane-2": mappingFor({ worktree: p.worktree }, { paneId: "pane-2", sandboxName: "herdr-codex-999999999999", deletingPid: 2147483647, deletingSince: "2026-09-13T00:00:00.000Z" }),
   }) });
   const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
   const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
@@ -317,4 +318,23 @@ test("ownership records survive a recycled pid check: a different incarnation of
   assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, bridgeToken: token, paneId: "pane-1" }), true);
   assert.equal(bridgeIsRunning({ bridgePid: bridge.pid, bridgeToken: null, paneId: "pane-1" }), true, "records without a token fall back to the command line check");
   bridge.stop();
+});
+
+test("a deletion claimed through one mapping blocks bridges and shells on another mapping of the same sandbox", () => {
+  const deleter = fakeActionProcess();
+  const f = createFixture({ sandboxes: [{ name: NAME, status: "running" }], panes: (p) => ({
+    "pane-1": mappingFor({ worktree: p.worktree }, { deletingPid: deleter.pid, deletingSince: "2026-09-13T00:00:00.000Z" }),
+    "pane-9": mappingFor({ worktree: p.worktree }, { paneId: "pane-9" }),
+  }) });
+  const sbx = createSbxClient({ bin: FAKE_SBX, env: f.env() });
+  const lifecycle = createLifecycle({ stateDir: f.stateDir, config: { ...CONFIG_DEFAULTS, sbxBin: FAKE_SBX }, sbx, log: () => {} });
+  assert.throws(() => lifecycle.acknowledgeBridge("pane-9", "launch-9"), (error) => error.errorKind === "conflict" && /being deleted right now through pane pane-1/.test(error.message));
+  assert.throws(() => lifecycle.shell("pane-9"), (error) => error.errorKind === "conflict" && /through pane pane-1/.test(error.message));
+  assert.equal(f.mappings().panes["pane-9"].bridgePid, undefined);
+  assert.deepEqual(f.sbxCalls(), []);
+  deleter.stop();
+  lifecycle.acknowledgeBridge("pane-9", "launch-9");
+  assert.equal(f.mappings().panes["pane-9"].bridgePid, process.pid, "a stale claim on the other mapping is ignored");
+  assert.deepEqual(readdirSync(path.join(f.stateDir, "panes")).filter((name) => name.endsWith(".lock")), [], "no lock left behind");
+  f.cleanup();
 });

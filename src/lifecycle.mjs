@@ -17,7 +17,7 @@ import { PluginError, errorKindOf, errorMessageOf } from "./errors.mjs";
 import { sandboxGitRemote } from "./naming.mjs";
 import { buildCreateArgs, buildExecArgs, classifyFailure, createSbxClient } from "./sbx.mjs";
 import { shellQuote } from "./shell.mjs";
-import { deletePaneEntry, getPaneEntry, loadState, processStartToken, requirePaneEntry, updatePaneEntry, withPaneLock } from "./state.mjs";
+import { deletePaneEntry, getPaneEntry, loadState, processStartToken, requirePaneEntry, updatePaneEntry, withPaneLock, withSandboxLocks } from "./state.mjs";
 
 /** Lifecycle states in which the sandbox exists and the agent can be attached. */
 export const CONNECTABLE_STATES = new Set(["prepared", "ready", "stopped"]);
@@ -129,6 +129,16 @@ export function shellIsRunning(entry) {
  */
 export function deletionInProgress(entry) {
   return processOwns({ pid: entry?.deletingPid, token: entry?.deletingToken ?? null }, ["action.mjs", "events.mjs"]);
+}
+
+/**
+ * Every sandbox name a mapping still tracks (its own and the ones it replaced),
+ * whether or not a deletion checkpoint already covers them.
+ * @param {{sandboxName?: string, replacesSandboxNames?: string[]}} entry
+ * @returns {string[]}
+ */
+export function trackedSandboxNames(entry) {
+  return deletionTargets({ ...entry, deletedSandboxNames: [] });
 }
 
 /** Lifecycle states in which no sandbox exists for the mapping, so not even a shell can open. */
@@ -448,11 +458,8 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string} paneId
    */
   function acknowledgeShell(paneId) {
-    withPaneLock(stateDir, paneId, () => {
-      const entry = requirePaneEntry(stateDir, paneId);
-      if (deletionInProgress(entry)) {
-        throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not opening a shell.`);
-      }
+    withOwnershipLocks(paneId, (entry) => {
+      assertNoDeletion(paneId, entry, "not opening a shell");
       const shells = liveShells(entry).filter((shell) => shell.pid !== process.pid);
       shells.push({ pid: process.pid, token: processStartToken(process.pid), since: new Date().toISOString(), paneId });
       updatePaneEntry(stateDir, paneId, { shellPids: shells });
@@ -524,8 +531,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     // Herdr is asked outside the lock (a slow Herdr must not hold every other
     // participant up); the process-based checks and the claim happen under it.
     assertHerdrIdle(paneId);
-    const entry = withPaneLock(stateDir, paneId, () => {
-      const current = requirePaneEntry(stateDir, paneId);
+    const entry = withOwnershipLocks(paneId, (current) => {
       assertNoOwners(paneId, current);
       if (deletionInProgress(current) && current.deletingPid !== process.pid) {
         throw new PluginError("conflict", `Another deletion of pane ${paneId}'s sandboxes is in progress (pid ${current.deletingPid}). Nothing was deleted.`);
@@ -547,8 +553,7 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
       for (const name of names) {
         // Every rm can take a while; look again right before each one.
         assertHerdrIdle(paneId);
-        withPaneLock(stateDir, paneId, () => {
-          const now = requirePaneEntry(stateDir, paneId);
+        withOwnershipLocks(paneId, (now) => {
           if (now.deletingPid !== process.pid) {
             throw new PluginError("conflict", `The deletion of pane ${paneId}'s sandboxes was taken over by process ${now.deletingPid ?? "unknown"}; stopping here.`);
           }
@@ -611,12 +616,12 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
     if (shells.length > 0) {
       throw new PluginError("conflict", `Pane ${paneId} has ${shells.length === 1 ? "an open-shell session" : `${shells.length} open-shell sessions`} in ${entry.sandboxName} (pid ${shells.map((shell) => shell.pid).join(", ")}). Close ${shells.length === 1 ? "it" : "them"} first. Nothing was deleted.`);
     }
-    const mine = new Set(deletionTargets({ ...entry, deletedSandboxNames: [] }));
+    const mine = new Set(trackedSandboxNames(entry));
     for (const other of Object.values(loadState(stateDir).panes)) {
       if (other.paneId === paneId) {
         continue;
       }
-      const shared = deletionTargets({ ...other, deletedSandboxNames: [] }).filter((name) => mine.has(name));
+      const shared = trackedSandboxNames(other).filter((name) => mine.has(name));
       if (shared.length > 0 && (bridgeIsRunning(other) || shellIsRunning(other))) {
         throw new PluginError("conflict", `Pane ${other.paneId} also tracks ${shared.join(", ")} and still has a bridge or shell attached. Nothing was deleted.`);
       }
@@ -691,13 +696,55 @@ export function createLifecycle({ stateDir, config, sbx = createSbxClient({ bin:
    * @param {string|null} [launchId]
    */
   function acknowledgeBridge(paneId, launchId = null) {
-    withPaneLock(stateDir, paneId, () => {
-      const entry = requirePaneEntry(stateDir, paneId);
-      if (deletionInProgress(entry)) {
-        throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); not attaching.`);
-      }
+    withOwnershipLocks(paneId, (entry) => {
+      assertNoDeletion(paneId, entry, "not attaching");
       updatePaneEntry(stateDir, paneId, { bridgeStartedAt: new Date().toISOString(), bridgeLaunchId: launchId, bridgePid: process.pid, bridgeToken: processStartToken(process.pid) });
     });
+  }
+
+  /**
+   * Runs `fn` with the mapping re-read under the locks of every sandbox the
+   * mapping tracks plus the mapping's own lock, the order every ownership
+   * change uses. The names are taken from an unlocked read first; a mapping
+   * that gained a name in between is reported as changed rather than acted on.
+   * @template T
+   * @param {string} paneId
+   * @param {(entry: Record<string, any>) => T} fn
+   * @returns {T}
+   */
+  function withOwnershipLocks(paneId, fn) {
+    const names = trackedSandboxNames(requirePaneEntry(stateDir, paneId));
+    return withSandboxLocks(stateDir, names, () => withPaneLock(stateDir, paneId, () => {
+      const entry = requirePaneEntry(stateDir, paneId);
+      const locked = new Set(names);
+      if (!trackedSandboxNames(entry).every((name) => locked.has(name))) {
+        throw new PluginError("conflict", `The mapping of pane ${paneId} changed while its sandboxes were being locked; try again.`);
+      }
+      return fn(entry);
+    }));
+  }
+
+  /**
+   * Throws when a deletion claims this mapping, or claims another mapping that
+   * tracks one of the same sandboxes (a duplicate left by an interrupted move).
+   * @param {string} paneId
+   * @param {Record<string, any>} entry
+   * @param {string} refusal What the caller will not do.
+   */
+  function assertNoDeletion(paneId, entry, refusal) {
+    if (deletionInProgress(entry)) {
+      throw new PluginError("conflict", `The sandboxes of pane ${paneId} are being deleted right now (pid ${entry.deletingPid}); ${refusal}.`);
+    }
+    const mine = new Set(trackedSandboxNames(entry));
+    for (const other of Object.values(loadState(stateDir).panes)) {
+      if (other.paneId === paneId) {
+        continue;
+      }
+      const shared = trackedSandboxNames(other).filter((name) => mine.has(name));
+      if (shared.length > 0 && deletionInProgress(other) && other.deletingPid !== process.pid) {
+        throw new PluginError("conflict", `${shared.join(", ")} ${shared.length === 1 ? "is" : "are"} being deleted right now through pane ${other.paneId} (pid ${other.deletingPid}); ${refusal}.`);
+      }
+    }
   }
 
   /**

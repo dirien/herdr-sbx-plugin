@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFile
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, paneLockPath, processStartToken, requirePaneEntry, savePaneEntry, updatePaneEntry, withPaneLock } from "../src/state.mjs";
+import { deletePaneEntry, deletePaneEntryIfUnchanged, entriesForLocalPath, getPaneEntry, loadState, paneEntryPath, paneLockPath, processStartToken, requirePaneEntry, sandboxLockPath, savePaneEntry, updatePaneEntry, withPaneLock, withSandboxLocks } from "../src/state.mjs";
 
 function freshDir() {
   return mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
@@ -256,4 +256,33 @@ test("process start tokens carry no whitespace, and a lock naming a live owner b
   });
   const [a, b] = await Promise.all([run(), run()]);
   assert.ok(Math.min(a[1], b[1]) - Math.max(a[0], b[0]) <= 0, "no overlap between two live holders");
+});
+
+test("loadState skips a mapping removed during the listing but still reports a broken one", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-state-"));
+  savePaneEntry(stateDir, "pane-1", { sandboxName: "herdr-x-1", localPath: "/w", workdir: "/w", agentKind: "claude-code", workspaceMode: "mount", lifecycleState: "ready" });
+  const dir = path.join(stateDir, "panes");
+  symlinkSync(path.join(dir, "vanished.json"), path.join(dir, "gone-0123456789.json"));
+  assert.deepEqual(Object.keys(loadState(stateDir).panes), ["pane-1"], "a file that is gone by the time it is read is not an error");
+  writeFileSync(path.join(dir, "broken-0123456789.json"), "{ not json");
+  assert.throws(() => loadState(stateDir), (error) => error.errorKind === "startup" && /unreadable/.test(error.message));
+});
+
+test("withSandboxLocks takes one lock per sandbox in a fixed order and is re-entrant", () => {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "herdr-sbx-lock-"));
+  const names = ["herdr-b", "herdr-a", "herdr-a"];
+  const result = withSandboxLocks(stateDir, names, () => {
+    const held = readdirSync(path.join(stateDir, "panes")).filter((name) => name.startsWith("sandbox-") && name.endsWith(".lock")).sort();
+    assert.equal(held.length, 2, "one lock per distinct sandbox");
+    return withSandboxLocks(stateDir, ["herdr-a"], () => "nested");
+  });
+  assert.equal(result, "nested");
+  assert.deepEqual(readdirSync(path.join(stateDir, "panes")).filter((name) => name.endsWith(".lock")), [], "all released");
+  writeFileSync(sandboxLockPath(stateDir, "herdr-a"), `${process.pid} ${processStartToken(process.pid)}\n`);
+  process.env.HERDR_SBX_LOCK_WAIT_MS = "150";
+  try {
+    assert.throws(() => withSandboxLocks(stateDir, ["herdr-a"], () => "never"), (error) => error.errorKind === "conflict" && /Sandbox herdr-a is locked by process/.test(error.message));
+  } finally {
+    delete process.env.HERDR_SBX_LOCK_WAIT_MS;
+  }
 });

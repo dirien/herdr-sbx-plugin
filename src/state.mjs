@@ -83,7 +83,16 @@ export function loadState(stateDir) {
   const dir = panesDir(stateDir);
   if (existsSync(dir)) {
     for (const name of readdirSync(dir).filter((item) => item.endsWith(".json")).sort()) {
-      const entry = readEntryFile(path.join(dir, name));
+      let entry;
+      try {
+        entry = readEntryFile(path.join(dir, name));
+      } catch (error) {
+        if (/** @type {any} */ (error)?.cause?.code === "ENOENT") {
+          // Forgotten, pruned or moved between the directory listing and the read.
+          continue;
+        }
+        throw error;
+      }
       panes[entry.paneId] = entry;
     }
   }
@@ -134,6 +143,23 @@ export function updatePaneEntry(stateDir, paneId, patch) {
  */
 export function paneLockPath(stateDir, paneId) {
   return `${paneEntryPath(stateDir, paneId)}.lock`;
+}
+
+/**
+ * Path of the lock file that serialises ownership changes of one sandbox
+ * across every mapping that tracks it (two mappings can track one sandbox
+ * after an interrupted move).
+ * @param {string} stateDir
+ * @param {string} sandboxName
+ * @returns {string}
+ */
+export function sandboxLockPath(stateDir, sandboxName) {
+  if (typeof sandboxName !== "string" || sandboxName === "") {
+    throw new PluginError("target", "A sandbox name is required to lock a sandbox.");
+  }
+  const readable = sandboxName.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 64);
+  const digest = createHash("sha256").update(sandboxName).digest("hex").slice(0, 10);
+  return path.join(panesDir(stateDir), `sandbox-${readable}-${digest}.lock`);
 }
 
 /** Lock files this process holds right now, so nested sections do not wait for themselves. */
@@ -328,7 +354,37 @@ function releaseLock(lock) {
  * @returns {T}
  */
 export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs() } = {}) {
-  const lock = paneLockPath(stateDir, paneId);
+  return withLockFile(paneLockPath(stateDir, paneId), `The mapping of pane ${paneId}`, fn, waitMs);
+}
+
+/**
+ * Runs `fn` while holding the locks of every named sandbox, taken in a fixed
+ * order so two callers with overlapping sets cannot wait for each other.
+ * Bridges and shells acknowledge themselves, and deletions claim mappings,
+ * under these locks, so ownership of a sandbox changes hands atomically even
+ * when more than one mapping tracks it.
+ * @template T
+ * @param {string} stateDir
+ * @param {string[]} sandboxNames
+ * @param {() => T} fn
+ * @param {{waitMs?: number}} [options]
+ * @returns {T}
+ */
+export function withSandboxLocks(stateDir, sandboxNames, fn, { waitMs = defaultLockWaitMs() } = {}) {
+  const locks = [...new Set(sandboxNames.filter((name) => typeof name === "string" && name !== ""))].map((name) => [sandboxLockPath(stateDir, name), name]).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  return locks.reduceRight((inner, [lock, name]) => () => withLockFile(lock, `Sandbox ${name}`, inner, waitMs), fn)();
+}
+
+/**
+ * The lock primitive behind {@link withPaneLock} and {@link withSandboxLocks}.
+ * @template T
+ * @param {string} lock
+ * @param {string} what Describes the locked thing in the conflict message.
+ * @param {() => T} fn
+ * @param {number} waitMs
+ * @returns {T}
+ */
+function withLockFile(lock, what, fn, waitMs) {
   if (heldLocks.has(lock)) {
     // Re-entrant within one process: a save inside a locked section must not wait for itself.
     return fn();
@@ -365,7 +421,7 @@ export function withPaneLock(stateDir, paneId, fn, { waitMs = defaultLockWaitMs(
       // that makes no progress, so a waiter can never spin or hang here.
     }
     if (Date.now() >= deadline) {
-      throw new PluginError("conflict", `The mapping of pane ${paneId} is locked by process ${owner && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : "unknown"}; try again in a moment.`);
+      throw new PluginError("conflict", `${what} is locked by process ${owner && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : "unknown"}; try again in a moment.`);
     }
     sleepSync(20);
   }
